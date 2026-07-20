@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+core/.venv/
+*.egg-info/
+dist/
+build/
+
+# Swift / Xcode
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Secrets — never commit real keys
+.env
+.env.*
+supabase/.env
