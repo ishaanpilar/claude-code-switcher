@@ -112,6 +112,11 @@ final class AutoSwitchEngine {
 
     private func tick() async {
         guard settings.enabled, let active = state.activeAccount else { return }
+        // Shares AppState's switch mutex with manual row clicks and the quick-switch buttons —
+        // without this, the automatic engine could race a manual switch the same way rapid clicks
+        // used to race each other (see AppState.switchTo's header comment for the concrete bug).
+        guard state.beginSwitching() else { return }
+        defer { state.endSwitching() }
         await releaseRecovered()
 
         guard let activePct = state.usageByAccount[active.accountUuid]?.tightestPct else {

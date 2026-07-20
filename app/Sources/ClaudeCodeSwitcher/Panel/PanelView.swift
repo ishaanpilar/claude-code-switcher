@@ -88,7 +88,9 @@ struct PanelView: View {
                     .foregroundStyle(Theme.textDim)
             }
             Spacer()
-            if state.isRefreshing {
+            if state.isSwitching {
+                ProgressView().controlSize(.small).help("Switching…")
+            } else if state.isRefreshing {
                 ProgressView().controlSize(.small)
             } else {
                 Button {
@@ -123,6 +125,8 @@ struct PanelView: View {
                         onRemove: { Task { await state.remove(account.accountUuid) } },
                         onSetShareMode: { mode in Task { await state.setShareMode(account, to: mode) } }
                     )
+                    .disabled(state.isSwitching)
+                    .opacity(state.isSwitching ? 0.5 : 1.0)
                 }
             }
         }
@@ -135,9 +139,11 @@ struct PanelView: View {
                 PanelActionButton(title: "Switch to best account", systemImage: "bolt.fill") {
                     Task { await state.switchToBestAccount() }
                 }
+                .disabled(state.isSwitching)
                 PanelActionButton(title: "Rotate to next account", systemImage: "arrow.triangle.2.circlepath") {
                     Task { await state.rotateAccount() }
                 }
+                .disabled(state.isSwitching)
             }
             PanelActionButton(title: "Add current account", systemImage: "plus.circle") {
                 if isPoolReady {

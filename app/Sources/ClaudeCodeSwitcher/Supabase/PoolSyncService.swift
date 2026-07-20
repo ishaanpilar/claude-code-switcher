@@ -177,12 +177,18 @@ struct PoolSyncService {
 
     /// Nil means someone else holds a live lease — the caller falls back to the next-best
     /// candidate (BUILD_PLAN.md section 5's "Switch account" flow) rather than treating it as an error.
+    ///
+    /// `claim_account` is declared `RETURNS claims` (a single composite row, nullable when the
+    /// lease is held by someone else), so PostgREST returns a single JSON object or `null` — NOT
+    /// an array. Decoding into `[ClaimRow]` threw "data couldn't be read" on every call, which
+    /// silently aborted the switch *after* the server-side claim had already been taken, leaving
+    /// orphaned claims and making switching appear completely broken. `.single()` can't be used
+    /// here (it errors on the legitimate null-lease case), so decode straight into `ClaimRow?`.
     func claim(accountId: UUID, purpose: String = "active_use") async throws -> ClaimRow? {
-        let rows: [ClaimRow] = try await client
+        try await client
             .rpc("claim_account", params: ClaimAccountParams(p_account: accountId, p_purpose: purpose))
             .execute()
             .value
-        return rows.first
     }
 
     func releaseClaim(accountId: UUID) async throws {
@@ -204,12 +210,14 @@ struct PoolSyncService {
 
     /// Nil means another client already holds a live leader lease — the caller stays a
     /// follower and relies on Realtime for `usage_current` updates instead of polling itself.
+    ///
+    /// Same single-composite/`RETURNS poll_leader` shape as `claim` above — decode into a single
+    /// optional, never an array, or the response fails to decode (see `claim`'s header comment).
     func tryBecomePollLeader(teamId: UUID) async throws -> PollLeaderRow? {
-        let rows: [PollLeaderRow] = try await client
+        try await client
             .rpc("try_become_poll_leader", params: TeamIdParam(p_team: teamId))
             .execute()
             .value
-        return rows.first
     }
 
     func heartbeatPollLeader(teamId: UUID) async throws {

@@ -37,6 +37,7 @@ final class AppState: ObservableObject {
     @Published private(set) var knownAccounts: [KnownAccount] = []
     @Published private(set) var usageByAccount: [String: Usage] = [:]
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isSwitching = false
     @Published var lastError: String?
     @Published var toast: String?
 
@@ -169,7 +170,16 @@ final class AppState: ObservableObject {
     /// already-local account (plain activate), a shared pool account never activated here
     /// before (claim → decrypt → import-activate), and a visibility-only pool account this
     /// device can't activate at all (surfaces an error rather than silently no-op'ing).
+    /// No re-entrancy guard here used to mean a burst of rapid clicks fired overlapping async
+    /// switches: each one snapshots `activeAccount` at call-start, so a second call launched
+    /// before the first's trailing `refresh()` lands would capture a stale "previous account,"
+    /// releasing the wrong claim (or none) and leaving multiple accounts claimed at once with no
+    /// error and no visual sign anything was happening — exactly what looked like "switching does
+    /// nothing." `beginSwitching()`/`endSwitching()` below is the shared mutex now guarding every
+    /// switch-initiating path, not just this one — see their doc comment.
     func switchTo(_ display: DisplayAccount) async {
+        guard beginSwitching() else { return }
+        defer { endSwitching() }
         let previousUuid = activeAccount?.accountUuid
         let previousPoolAccountId = previousUuid.flatMap { poolAccountsByUuid[$0]?.id }
         do {
@@ -277,6 +287,22 @@ final class AppState: ObservableObject {
     func adoptClaim(accountId: UUID) {
         heldClaimAccountId = accountId
         startHeartbeat()
+    }
+
+    /// Single mutex guarding every switch-initiating path — manual row clicks (`switchTo`), the
+    /// quick-switch buttons, and `AutoSwitchEngine`'s own automatic tick — so none of them can
+    /// race each other. Without this, two switches in flight at once each capture a stale
+    /// "previous account" snapshot and release the wrong claim (or none), which is exactly the
+    /// bug that made switching look broken: rapid clicks left multiple accounts claimed
+    /// simultaneously with no error and no visual feedback that anything was happening.
+    func beginSwitching() -> Bool {
+        guard !isSwitching else { return false }
+        isSwitching = true
+        return true
+    }
+
+    func endSwitching() {
+        isSwitching = false
     }
 
     private func startHeartbeat() {
@@ -405,14 +431,18 @@ final class AppState: ObservableObject {
     /// directly. Works standalone too (no pool configured) across purely local accounts.
     @discardableResult
     func switchToBestAccount() async -> AutoSwitchEvent {
-        await autoSwitchEngine.switchToBest()
+        guard beginSwitching() else { return .blocked(reason: "a switch is already in progress") }
+        defer { endSwitching() }
+        return await autoSwitchEngine.switchToBest()
     }
 
     /// One-click "move to the next account" in the same email-sorted order the panel renders,
     /// wrapping around. Ignores usage by design — a manual round-robin, not a usage decision.
     @discardableResult
     func rotateAccount() async -> AutoSwitchEvent {
-        await autoSwitchEngine.rotate()
+        guard beginSwitching() else { return .blocked(reason: "a switch is already in progress") }
+        defer { endSwitching() }
+        return await autoSwitchEngine.rotate()
     }
 
     // MARK: - Auto-switch settings
