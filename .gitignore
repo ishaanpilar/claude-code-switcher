@@ -17,6 +17,9 @@ DerivedData/
 # macOS
 .DS_Store
 
+# Raw generated-image dumps — the canonical, renamed asset lives in app/Resources/app-icon.png
+Gemini_Generated_Image_*.png
+
 # Secrets — never commit real keys
 .env
 .env.*

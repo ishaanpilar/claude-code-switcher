@@ -168,6 +168,22 @@ final class PoolState: ObservableObject {
         }
     }
 
+    /// Leave the current team (Settings → Team). The RPC blocks the team owner from leaving while
+    /// others remain — that error is surfaced here rather than silently swallowed, since the user
+    /// needs to know why nothing happened. On success onboarding re-derives (membership comes back
+    /// nil → back to `needsTeamSetup`).
+    func leaveTeam() async {
+        guard case .signedIn(let userId, _) = auth.state else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            try await teamService.leaveTeam()
+            await loadMembership(userId: userId)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     func signOut() async {
         await auth.signOut()
     }

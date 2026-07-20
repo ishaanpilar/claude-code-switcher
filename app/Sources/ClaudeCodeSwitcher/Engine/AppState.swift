@@ -93,6 +93,7 @@ final class AppState: ObservableObject {
             ? (configPath as NSString).appendingPathComponent(".claude.json")
             : (NSHomeDirectory() as NSString).appendingPathComponent(".claude.json")
         autoCapture.start(configPath: claudeJSON)
+        Diagnostics.log("app started")
         Task { await refresh() }
     }
 
@@ -459,24 +460,101 @@ final class AppState: ObservableObject {
         autoSwitchEngine.updateSettings(autoSwitchSettings)
     }
 
+    /// General setter for the Settings window's auto-switch tab, where cooldown / hysteresis /
+    /// interval are also exposed. Persists and hands the whole struct to the engine (which
+    /// re-arms its loop if `enabled`/`intervalSeconds` changed) in one pass, so the panel's quick
+    /// toggle and the full settings tab can't disagree about what's active.
+    func updateAutoSwitchSettings(_ newSettings: AutoSwitchSettings) {
+        autoSwitchSettings = newSettings
+        autoSwitchSettings.saveToDefaults()
+        autoSwitchEngine.updateSettings(autoSwitchSettings)
+    }
+
+    // MARK: - Account management (Settings → My Accounts)
+
+    /// Whether the signed-in user owns this account (added it) and so may change its sharing,
+    /// remove it, or transfer it — everywhere the Settings UI needs to gate an owner-only control.
+    func isOwner(of account: DisplayAccount) -> Bool {
+        account.poolAccount?.ownerUserId == myUserId
+    }
+
+    /// Forgets an account from the team pool entirely (owner-only) — distinct from `remove`, which
+    /// only drops the *local* copy on this Mac. Also drops the local copy if present, so an
+    /// account you both own and hold locally disappears from both places in one action.
+    func removeFromPool(_ account: DisplayAccount) async {
+        guard let poolAccount = account.poolAccount else { return }
+        do {
+            try await poolSync.removeAccountFromPool(accountId: poolAccount.id)
+            if account.isLocallyKnown {
+                _ = try? await bridge.remove(accountUuid: account.accountUuid)
+            }
+            usageByAccount.removeValue(forKey: account.accountUuid)
+            toast = "\(account.email) removed from the team pool"
+            await refresh()
+            await refreshPool()
+        } catch {
+            lastError = (error as? CoreBridgeError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Hands an account you own to another team member (the "wrong person added it" fix). After
+    /// this you lose owner controls over it and they gain them — enforced server-side too, so a
+    /// stale client can't keep editing it.
+    func transferOwnership(_ account: DisplayAccount, to newOwner: UUID) async {
+        guard let poolAccount = account.poolAccount else { return }
+        do {
+            try await poolSync.transferOwnership(accountId: poolAccount.id, to: newOwner)
+            let name = membersById[newOwner]?.displayName ?? "teammate"
+            toast = "\(account.email) is now owned by \(name)"
+            await refreshPool()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    // MARK: - General settings
+
+    var launchAtLoginEnabled: Bool { LaunchAtLogin.isEnabled }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            try LaunchAtLogin.set(enabled)
+            objectWillChange.send()  // isEnabled is read live from SMAppService, not @Published
+        } catch {
+            lastError = "Couldn't \(enabled ? "enable" : "disable") launch at login: \(error.localizedDescription)"
+        }
+    }
+
+    var notificationsEnabled: Bool { NotificationService.isEnabled }
+
+    func setNotificationsEnabled(_ enabled: Bool) {
+        NotificationService.isEnabled = enabled
+        objectWillChange.send()  // stored in UserDefaults via NotificationService, not @Published
+    }
+
     private func handleAutoSwitchEvent(_ event: AutoSwitchEvent) {
         switch event {
         case .switched(let email, let trigger):
             let isManual = trigger.hasPrefix("manual")
             toast = isManual ? "Switched to \(email)" : "Auto-switched to \(email) (\(trigger))"
+            Diagnostics.log("switch: \(email) (\(trigger))")
             if !isManual {
                 NotificationService.post(title: "Switched accounts", body: "Now using \(email) (\(trigger))")
             }
         case .quarantined(let email, let reason):
             toast = "\(email) quarantined (\(reason)) — re-login to recover it"
+            Diagnostics.log("quarantine: \(email) (\(reason))")
             NotificationService.post(title: "Account quarantined", body: "\(email) needs re-login (\(reason))")
         case .recovered(let email):
             toast = "\(email) recovered from quarantine — eligible again"
+            Diagnostics.log("recovered: \(email)")
         case .allExhausted:
             toast = "All accounts near their limit — nothing to switch to"
+            Diagnostics.log("all accounts exhausted")
             NotificationService.post(title: "All accounts near their limit", body: "No account has headroom to switch to right now")
         case .error(let message):
             lastError = message
+            Diagnostics.log("auto-switch error: \(message)")
         case .blocked:
             break  // routine — not worth surfacing as a toast every tick
         }

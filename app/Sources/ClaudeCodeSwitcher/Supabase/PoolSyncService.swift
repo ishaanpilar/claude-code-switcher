@@ -68,6 +68,25 @@ struct PoolSyncService {
             .execute()
     }
 
+    /// Removes an account from the pool entirely (owner-only via the `accounts_delete` RLS
+    /// policy). Cascades its token/usage/claim rows. Distinct from downgrading to
+    /// visibility-only — this forgets the account from the team altogether.
+    func removeAccountFromPool(accountId: UUID) async throws {
+        try await client
+            .from("accounts")
+            .delete()
+            .eq("id", value: accountId)
+            .execute()
+    }
+
+    /// Hands an account to another team member (Settings → My Accounts). Owner-only and
+    /// same-team-only, both enforced inside the `transfer_account_ownership` RPC.
+    func transferOwnership(accountId: UUID, to newOwner: UUID) async throws {
+        try await client
+            .rpc("transfer_account_ownership", params: TransferOwnershipParams(p_account: accountId, p_new_owner: newOwner))
+            .execute()
+    }
+
     func fetchAccounts(teamId: UUID) async throws -> [PoolAccount] {
         try await client
             .from("accounts")

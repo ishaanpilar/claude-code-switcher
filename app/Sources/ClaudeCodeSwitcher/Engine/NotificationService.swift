@@ -15,6 +15,15 @@ import UserNotifications
 /// Phase 5's code-signing/notarization step, not yet done).
 enum NotificationService {
     private static var isAvailable: Bool { Bundle.main.bundleIdentifier != nil }
+    private static let enabledKey = "com.claudecodeswitcher.notificationsEnabled"
+
+    /// User-facing on/off (Settings → General). Defaults to on. Gates `post` so the auto-switch
+    /// engine's own `NotificationService.post` calls don't need to know about the preference — the
+    /// single choke point is here.
+    static var isEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
+    }
 
     static func requestAuthorizationIfNeeded() {
         guard isAvailable else { return }
@@ -22,7 +31,7 @@ enum NotificationService {
     }
 
     static func post(title: String, body: String) {
-        guard isAvailable else { return }
+        guard isAvailable, isEnabled else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

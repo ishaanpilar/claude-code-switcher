@@ -196,3 +196,4 @@ struct HeartbeatClaimParams: Encodable { let p_account: UUID }
 struct ReleaseClaimParams: Encodable { let p_account: UUID }
 struct LogTurnParams: Encodable { let p_team: UUID; let p_account: UUID?; let p_event: String }
 struct TeamIdParam: Encodable { let p_team: UUID }
+struct TransferOwnershipParams: Encodable { let p_account: UUID; let p_new_owner: UUID }

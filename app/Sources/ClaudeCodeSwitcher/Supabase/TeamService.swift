@@ -60,4 +60,14 @@ struct TeamService {
             .execute()
             .value
     }
+
+    /// Removes the caller from their team (and their owned accounts) via the `leave_team` RPC —
+    /// which blocks the team owner from leaving while other members remain, so the error surfaces
+    /// to the UI rather than orphaning the team. No return value; the caller re-derives its state
+    /// from `myMembership` afterward (it'll come back nil).
+    func leaveTeam() async throws {
+        try await client
+            .rpc("leave_team")
+            .execute()
+    }
 }

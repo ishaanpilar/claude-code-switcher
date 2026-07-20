@@ -157,6 +157,9 @@ struct PanelView: View {
                     openWindow(id: "team-usage")
                 }
             }
+            PanelActionButton(title: "Settings…", systemImage: "gearshape") {
+                openWindow(id: "settings")
+            }
             if isTeamOwner {
                 PanelActionButton(title: "Invite teammate…", systemImage: "person.badge.plus") {
                     generateInvite()

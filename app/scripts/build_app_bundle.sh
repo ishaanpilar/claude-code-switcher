@@ -22,6 +22,11 @@ mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$APP_DIR/.build/$CONFIG/ClaudeCodeSwitcher" "$BUNDLE/Contents/MacOS/ClaudeCodeSwitcher"
 cp "$SCRIPT_DIR/Info.plist" "$BUNDLE/Contents/Info.plist"
 
+# App icon (AppIcon.icns, referenced by Info.plist's CFBundleIconFile) plus the logo.png the
+# About page loads at runtime. Both live in app/Resources/ (generated from app-icon.png).
+cp "$APP_DIR/Resources/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
+cp "$APP_DIR/Resources/logo.png" "$BUNDLE/Contents/Resources/logo.png"
+
 codesign --force --deep --sign - "$BUNDLE"
 
 # Forces Launch Services to (re-)read Info.plist's CFBundleURLTypes now, rather than waiting for

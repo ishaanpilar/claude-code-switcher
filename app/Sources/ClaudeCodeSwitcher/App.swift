@@ -19,6 +19,14 @@ struct ClaudeCodeSwitcherApp: App {
             TeamUsageView(state: state, pool: pool)
         }
         .windowResizability(.contentSize)
+
+        // The full Settings window — the deep-configuration surface the menu-bar dropdown
+        // deliberately isn't. Opened via "Settings…" in the panel (and the standard Cmd-,).
+        Window("Settings", id: "settings") {
+            SettingsView(state: state, pool: pool)
+        }
+        .windowResizability(.contentMinSize)
+        .keyboardShortcut(",", modifiers: .command)
     }
 }
 
