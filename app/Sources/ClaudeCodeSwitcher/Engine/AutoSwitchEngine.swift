@@ -69,6 +69,13 @@ final class AutoSwitchEngine {
     private var lastSwitchAt: Date?
     private var tickTask: Task<Void, Never>?
 
+    /// In-memory only (not disk-persisted like quarantine): a relaunch clearing this is fine,
+    /// since the risk it guards against is rapid *repeated* attempts within one running session,
+    /// not something that needs to survive a restart. See `tryActivate`'s freshen step for why
+    /// this exists — the actual fix for a real incident, not defensive speculation.
+    private var lastFreshenAttempt: [String: Date] = [:]
+    private let freshenCooldownS: TimeInterval = 120
+
     var onEvent: ((AutoSwitchEvent) -> Void)?
 
     init(bridge: CoreBridge, state: AppState) {
@@ -356,10 +363,29 @@ final class AutoSwitchEngine {
 
         // Freshen: ensure the token outlives Claude Code's own 5-minute refresh buffer before
         // it gets activated, same 10-minute margin claude-swap's FRESHEN_BUFFER_MS uses.
+        //
+        // A second guard beyond the buffer itself: never freshen the same account twice within
+        // freshenCooldownS, regardless of what isNearExpiry says. This is the actual fix for the
+        // incident where two real accounts got permanently logged out — a refresh_token is
+        // typically single-use, so back-to-back freshen attempts on the same account (rapid
+        // clicking, or an unlucky overlap between this device and another) raced each other, and
+        // the loser's copy of the refresh_token was already spent. The cooldown makes that
+        // physically impossible from this engine's own side, independent of the mutex in
+        // AppState.switchTo (which only serializes *this* device's switches, not a race against
+        // another device or process also holding a copy of the same shared account's token).
         if isNearExpiry(token) {
+            let now = Date()
+            if let last = lastFreshenAttempt[candidate.accountUuid], now.timeIntervalSince(last) < freshenCooldownS {
+                return .skip  // freshened moments ago (by us or a race) — don't pile on
+            }
+            lastFreshenAttempt[candidate.accountUuid] = now
             do {
                 let refreshed = try await bridge.refreshToken(token)
                 token = refreshed.token
+                // Persisted immediately, before activation is even attempted — see
+                // CoreBridge.saveCredentials's header comment for exactly why this ordering is
+                // the fix: a failed activate right after must never discard the only valid copy.
+                try? await bridge.saveCredentials(accountUuid: candidate.accountUuid, token: token)
                 if let poolAccount = candidate.poolAccount, let teamKey {
                     try? await poolSync.pushToken(accountId: poolAccount.id, plaintextToken: token, teamKey: teamKey)
                 }

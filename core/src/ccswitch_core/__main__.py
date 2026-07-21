@@ -16,6 +16,8 @@ Command surface (BUILD_PLAN.md section 2):
   export-token  --account-uuid U            print a locally-backed-up account's token
   read-usage    [--account-uuid U]          fetch usage; token from stdin or local backup
   refresh-token                             refresh a token given on stdin
+  save-credentials --account-uuid U         persist a token (stdin) as this account's local
+                                             backup, without activating it — see cmd_save_credentials
   remove        --account-uuid U            delete this machine's local backup
 """
 
@@ -125,6 +127,25 @@ def cmd_refresh_token(_args: argparse.Namespace) -> int:
     return _ok(token=outcome.credentials, token_account=outcome.token_account)
 
 
+def cmd_save_credentials(args: argparse.Namespace) -> int:
+    """Persists a token to this account's local backup *without* activating it (no
+    ~/.claude.json write, no Claude Code lock held). Exists specifically for the auto-switch
+    engine's freshen-before-activate step: a refreshed OAuth token must be saved the instant the
+    refresh succeeds, before anything else is attempted — a refresh_token is typically single-use,
+    so if the subsequent activate fails for an unrelated reason (lock contention, a transient
+    error) and the freshly-refreshed token was never persisted, the *next* attempt reads the old,
+    already-consumed refresh_token back out of storage and is guaranteed to fail with
+    invalid_grant. Saving here first means a failed activate just means "retry the activate" —
+    never "this account is now permanently dead."
+    """
+    token = _read_stdin()
+    if not token:
+        return _err("empty_token", "No token provided on stdin")
+    store = CredentialStore()
+    store.write_account_credentials(args.account_uuid, token)
+    return _ok()
+
+
 def cmd_remove(args: argparse.Namespace) -> int:
     removed = switch.remove_local(args.account_uuid)
     return _ok(removed=removed)
@@ -156,6 +177,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_read_usage)
 
     sub.add_parser("refresh-token").set_defaults(func=cmd_refresh_token)
+
+    p = sub.add_parser("save-credentials")
+    p.add_argument("--account-uuid", required=True)
+    p.set_defaults(func=cmd_save_credentials)
 
     p = sub.add_parser("remove")
     p.add_argument("--account-uuid", required=True)

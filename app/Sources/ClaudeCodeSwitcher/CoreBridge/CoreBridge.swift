@@ -181,6 +181,17 @@ extension CoreBridge {
         return try JSONDecoder().decode(RefreshedToken.self, from: data)
     }
 
+    /// Persists a token as `accountUuid`'s local backup without activating it — no
+    /// `~/.claude.json` write, no Claude Code lock held. Called immediately after a successful
+    /// `refreshToken`, before attempting to activate: a refresh token is typically single-use, so
+    /// if the refreshed credential isn't saved *before* the subsequent activate is attempted, a
+    /// failed activate (for any unrelated reason) silently discards the only valid copy and every
+    /// later attempt reads back the already-consumed one — this is what turns "a lock was briefly
+    /// held" into "this account is permanently logged out."
+    func saveCredentials(accountUuid: String, token: String) async throws {
+        _ = try await run(["save-credentials", "--account-uuid", accountUuid], stdin: token)
+    }
+
     @discardableResult
     func remove(accountUuid: String) async throws -> Bool {
         let data = try await run(["remove", "--account-uuid", accountUuid])
