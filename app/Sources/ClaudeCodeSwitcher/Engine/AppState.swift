@@ -51,6 +51,11 @@ final class AppState: ObservableObject {
     /// opt-in, never assumed; reflects the actual on-disk state at launch rather than a
     /// separately-tracked preference that could drift from it.
     @Published private(set) var attributionEnabled = AttributionHookService.isInstalled()
+    /// Whether this device reserves an account while it's in use — a "held by X" lease that blocks
+    /// teammates from switching to it and steers auto-switch away. **Off by default**: two people
+    /// can happily share one account at the same time, so nothing is claimed, blocked, or badged
+    /// unless the user opts in (Settings → Team). Purely a local preference.
+    @Published private(set) var reserveAccountsWhileInUse = UserDefaults.standard.bool(forKey: "com.claudecodeswitcher.reserveAccounts")
 
     private let bridge: CoreBridge
     private let poolSync = PoolSyncService()
@@ -192,13 +197,22 @@ final class AppState: ObservableObject {
                     lastError = "This device doesn't have the team key yet — can't decrypt shared accounts."
                     return
                 }
-                guard let claim = try await poolSync.claim(accountId: poolAccount.id) else {
-                    lastError = "\(display.email) is in use by someone else right now — try another account."
+                // An existing reservation is honored no matter who's looking — reserving is only
+                // ever the account owner's call to make (and only for their own account, see
+                // below), but once made, everyone respects it rather than just whoever happens to
+                // have the toggle on themselves.
+                if let heldBy = display.claim?.heldBy, heldBy != myUserId {
+                    lastError = "\(display.email) is reserved by \(display.claimedByName ?? "someone else") right now — try another account."
                     return
                 }
-                heldClaimAccountId = poolAccount.id
-                startHeartbeat()
-                _ = claim
+                // Only the account's *owner* may create a reservation on it, and only if they've
+                // opted in — this device never reserves an account someone else owns.
+                if reserveAccountsWhileInUse, poolAccount.ownerUserId == myUserId,
+                   let claim = try await poolSync.claim(accountId: poolAccount.id) {
+                    heldClaimAccountId = poolAccount.id
+                    startHeartbeat()
+                    _ = claim
+                }
                 guard let tokenRow = try await poolSync.fetchTeamKeyToken(accountId: poolAccount.id) else {
                     lastError = "No shared token found for \(display.email) yet."
                     return
@@ -214,8 +228,8 @@ final class AppState: ObservableObject {
             }
             // Release the account we just switched away from — only after the new switch has
             // actually succeeded, so a failed attempt never gives up a claim on the account the
-            // user is still genuinely on. Without this, a claim just sits until its 5-minute
-            // lease quietly expires, showing as "held by" someone who switched away seconds ago.
+            // user is still genuinely on. Unconditional (not toggle-gated): we only ever hold a
+            // claim here if we created one, which is a no-op to release otherwise.
             if let previousPoolAccountId, previousPoolAccountId != display.poolAccount?.id {
                 try? await poolSync.releaseClaim(accountId: previousPoolAccountId)
                 if heldClaimAccountId == previousPoolAccountId { heldClaimAccountId = nil }
@@ -268,16 +282,31 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Called for locally-known accounts — which isn't the same thing as *owned*: a teammate's
+    /// shared account you've activated here before is locally known too. Only ever reserves an
+    /// account you actually own, and only if you've opted in; a non-owned account here is simply
+    /// skipped rather than blocking the switch, since local credentials already work regardless
+    /// (the claimed-by badge, if any, still reflects the owner's own reservation honestly).
     private func claimIfPossible(_ display: DisplayAccount) async throws {
-        guard let poolAccount = display.poolAccount else { return }
+        guard reserveAccountsWhileInUse, let poolAccount = display.poolAccount, poolAccount.ownerUserId == myUserId else { return }
         if let claim = try await poolSync.claim(accountId: poolAccount.id) {
             heldClaimAccountId = poolAccount.id
             startHeartbeat()
             _ = claim
         }
-        // A nil claim (someone else holds it) is not fatal for switching to your OWN local
-        // account — you still have valid credentials for it — but the claimed-by badge will
-        // keep showing the other holder, which is an honest reflection of contention, not a bug.
+    }
+
+    /// The reservation opt-in (Settings → Team). Off by default. Turning it off gives up any lease
+    /// this device currently holds so nothing shows as reserved by us anymore.
+    func setReserveAccountsWhileInUse(_ enabled: Bool) {
+        reserveAccountsWhileInUse = enabled
+        UserDefaults.standard.set(enabled, forKey: "com.claudecodeswitcher.reserveAccounts")
+        if !enabled, let held = heldClaimAccountId {
+            heartbeatTimer?.invalidate()
+            heartbeatTimer = nil
+            heldClaimAccountId = nil
+            Task { try? await poolSync.releaseClaim(accountId: held); await refreshPool() }
+        }
     }
 
     /// Adopts a claim made outside `switchTo`/`claimIfPossible` — specifically `AutoSwitchEngine`,
@@ -679,6 +708,9 @@ final class AppState: ObservableObject {
     private func makeDisplayAccount(accountUuid: String, email: String, organizationUuid: String?, isLocallyKnown: Bool) -> DisplayAccount {
         let poolAccount = poolAccountsByUuid[accountUuid]
         let claim = poolAccount.flatMap { claimsByAccountId[$0.id] }
+        // Always reflects real claim state, regardless of the viewer's own reservation preference
+        // — a claim only ever exists because the account's *owner* reserved it (see switchTo /
+        // claimIfPossible), so showing it honestly is what makes that reservation mean anything.
         let claimedByName = claim?.heldBy.flatMap { membersById[$0]?.displayName }
         return DisplayAccount(
             accountUuid: accountUuid, email: email, organizationUuid: organizationUuid,

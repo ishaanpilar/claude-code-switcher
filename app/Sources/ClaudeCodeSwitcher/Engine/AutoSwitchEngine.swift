@@ -188,8 +188,10 @@ final class AutoSwitchEngine {
     }
 
     /// Candidate filter shared by the automatic tick path and the manual quick-switch actions:
-    /// claim-aware (the one axis claude-swap's single-user engine has no concept of — an account
-    /// someone else is actively using is never a target, full stop) and quarantine-aware.
+    /// quarantine-aware, and always claim-aware — a live reservation is honored regardless of
+    /// *this* device's own reservation preference, since a claim only ever exists because the
+    /// account's owner reserved it (see `tryActivate`'s claim call below). Reservation creation is
+    /// opt-in and owner-only; respecting one that already exists is not optional.
     private func eligibleManualCandidates(excluding activeUuid: String?) -> [DisplayAccount] {
         state.displayAccounts.filter { account in
             account.accountUuid != activeUuid
@@ -210,13 +212,16 @@ final class AutoSwitchEngine {
             switch await tryActivate(candidate) {
             case .switched:
                 lastSwitchAt = Date()
-                // Same release-what-you-left rule as AppState.switchTo's manual path — otherwise
-                // the account just switched away from sits "held" until its lease quietly expires.
+                // Give up whatever we held (a no-op if we never claimed anything). Unconditional,
+                // not toggle-gated — see AppState.switchTo's matching release for why.
                 if let previousPoolAccountId = previousAccountUuid.flatMap({ state.poolAccountsByUuid[$0]?.id }),
                    previousPoolAccountId != candidate.poolAccount?.id {
                     try? await poolSync.releaseClaim(accountId: previousPoolAccountId)
                 }
-                if let poolAccount = candidate.poolAccount {
+                // Only adopt a reservation on the new account if it's ours to reserve and we've
+                // opted in — the claim itself was only taken under that same condition, in
+                // tryActivate below, so this just keeps AppState's heartbeat in sync with it.
+                if state.reserveAccountsWhileInUse, let poolAccount = candidate.poolAccount, poolAccount.ownerUserId == myUserId {
                     state.adoptClaim(accountId: poolAccount.id)
                 }
                 await logSwitch(from: previousAccountUuid, to: candidate.accountUuid, trigger: trigger)
@@ -360,9 +365,12 @@ final class AutoSwitchEngine {
             }
         }
 
-        // Claim before activating — pool accounts only; a purely personal account never pushed
-        // to the pool has no claim row and needs none.
-        if let poolAccount = candidate.poolAccount {
+        // Claim before activating — only when reservations are on (off by default) and only for a
+        // pool account we actually own; this engine never reserves a teammate's account on their
+        // behalf. `eligibleManualCandidates` already filtered out anything someone else has
+        // reserved, so a failed claim here would only mean a same-owner race across that owner's
+        // own devices — skip to the next candidate either way.
+        if state.reserveAccountsWhileInUse, let poolAccount = candidate.poolAccount, poolAccount.ownerUserId == myUserId {
             guard (try? await poolSync.claim(accountId: poolAccount.id)) != nil else { return .skip }
         }
 

@@ -280,6 +280,15 @@ private struct TeamPane: View {
                     LabeledContent("Your role", value: member.role == "owner" ? "Owner" : "Member")
                 }
 
+                Section {
+                    Toggle("Reserve my accounts while I'm using them", isOn: Binding(
+                        get: { state.reserveAccountsWhileInUse },
+                        set: { state.setReserveAccountsWhileInUse($0) }
+                    ))
+                } footer: {
+                    Text("Off by default — teammates can use the same account at the same time. Turn on to reserve accounts you own while you're using them (shows a \"held by you\" badge, blocks others, and steers auto-switch away). This only ever reserves accounts you own — never a teammate's.")
+                }
+
                 Section("Members") {
                     ForEach(state.membersById.values.sorted { $0.displayName < $1.displayName }) { m in
                         LabeledContent {
