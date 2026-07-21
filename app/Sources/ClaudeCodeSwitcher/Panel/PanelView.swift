@@ -124,7 +124,8 @@ struct PanelView: View {
                         isOwner: account.poolAccount?.ownerUserId == state.myUserId,
                         onSwitch: { Task { await state.switchTo(account) } },
                         onRemove: { Task { await state.remove(account.accountUuid) } },
-                        onSetShareMode: { mode in Task { await state.setShareMode(account, to: mode) } }
+                        onSetShareMode: { mode in Task { await state.setShareMode(account, to: mode) } },
+                        onRequestReauth: { Task { await state.requestReauth(account) } }
                     )
                     .disabled(state.isSwitching)
                     .opacity(state.isSwitching ? 0.5 : 1.0)

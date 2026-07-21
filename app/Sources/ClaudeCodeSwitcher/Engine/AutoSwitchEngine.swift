@@ -308,7 +308,12 @@ final class AutoSwitchEngine {
     /// — release it. Cheap: only touches locally-known accounts (a shared/visibility-only account
     /// nobody has activated on this device has no local token to re-check here, and stays
     /// quarantined until a client that does hold it releases it).
-    private func releaseRecovered() async {
+    ///
+    /// Internal (not private): `AppState.refresh()` calls this directly on every refresh, not just
+    /// while this engine's own tick loop is running — quarantine recovery has to work regardless
+    /// of whether auto-switch itself is enabled, since "log back into your account and it's
+    /// detected automatically" shouldn't have a hidden dependency on an unrelated toggle.
+    func releaseRecovered() async {
         guard !quarantine.isEmpty else { return }
         var changed = false
         for (accountUuid, entry) in quarantine {

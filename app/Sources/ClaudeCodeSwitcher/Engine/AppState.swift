@@ -127,6 +127,10 @@ final class AppState: ObservableObject {
             knownAccounts = snap.knownAccounts
             lastError = nil
             await refreshUsage()
+            // Unconditional — not gated on auto-switch being enabled. Covers both a purely local
+            // account's quarantine (fingerprint-based, see AutoSwitchEngine.releaseRecovered) and,
+            // via refreshUsage below, a shared account's owner recovering and re-syncing it.
+            await autoSwitchEngine.releaseRecovered()
             refreshAttributionSessionState()
         } catch {
             lastError = (error as? CoreBridgeError)?.message ?? error.localizedDescription
@@ -144,6 +148,34 @@ final class AppState: ObservableObject {
             if let poolAccount = poolAccountsByUuid[account.accountUuid], let member = currentMember {
                 try? await poolSync.pushUsage(accountId: poolAccount.id, usage: usage, fetchedBy: member.userId)
             }
+            // A successful read is proof this device's stored credential for the account
+            // currently works — the only signal the owner's own device needs to know a re-login
+            // actually landed (see request_reauth's header comment for why a fingerprint-diff
+            // check, used for the local case, doesn't fit here: whoever *reported* it broken
+            // never had this account's token to fingerprint in the first place).
+            if let poolAccount = poolAccountsByUuid[account.accountUuid],
+               poolAccount.status == .quarantined, poolAccount.ownerUserId == myUserId {
+                await syncRecoveredOwnedAccount(account, poolAccount: poolAccount)
+            }
+        }
+    }
+
+    /// Clears the shared quarantine flag and, for a shared account, re-encrypts and re-pushes the
+    /// now-working token so teammates can actually use it again — this is the "gets synced on my
+    /// account here" half of the re-login request flow, triggered automatically the moment this
+    /// device proves (via the successful read in `refreshUsage`) that re-authentication landed.
+    private func syncRecoveredOwnedAccount(_ account: KnownAccount, poolAccount: PoolAccount) async {
+        do {
+            try await poolSync.clearAccountReauth(accountId: poolAccount.id)
+            if poolAccount.shareMode == .shared, let teamKey {
+                let token = try await bridge.exportToken(accountUuid: account.accountUuid)
+                try await poolSync.pushToken(accountId: poolAccount.id, plaintextToken: token, teamKey: teamKey)
+            }
+            toast = "\(account.email) is working again — synced to the team"
+            Diagnostics.log("re-auth recovered: \(account.email)")
+            await refreshPool()
+        } catch {
+            // Best-effort — retried on the next refresh cycle if this failed transiently.
         }
     }
 
@@ -280,6 +312,26 @@ final class AppState: ObservableObject {
         } catch {
             lastError = (error as? CoreBridgeError)?.message ?? error.localizedDescription
         }
+    }
+
+    /// "Someone else's account looks broken" — flags it (visible to the whole team via the
+    /// account's `status`) and records that this user asked, which fires a system notification on
+    /// the owner's own device (see the `reauth_requests` Realtime subscription in
+    /// `startPoolRealtime`). Available on any pool account regardless of quarantine state — the
+    /// person noticing the problem is often ahead of the app's own diagnosis.
+    func requestReauth(_ display: DisplayAccount) async {
+        guard let poolAccount = display.poolAccount else { return }
+        do {
+            try await poolSync.requestReauth(accountId: poolAccount.id)
+            toast = "Asked \(ownerName(of: poolAccount) ?? "the owner") to re-login \(display.email)"
+            await refreshPool()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    private func ownerName(of poolAccount: PoolAccount) -> String? {
+        membersById[poolAccount.ownerUserId]?.displayName
     }
 
     /// Called for locally-known accounts — which isn't the same thing as *owned*: a teammate's
@@ -683,7 +735,29 @@ final class AppState: ObservableObject {
                     }
                 }
             },
+            Task { [poolSync] in
+                await poolSync.subscribeChanges(table: "reauth_requests", as: ReauthRequest.self) { [weak self] request in
+                    Task { @MainActor in self?.handleReauthRequest(request) }
+                }
+            },
         ]
+    }
+
+    /// Fires the actual "Ishaan Pilar is requesting re-login…" system notification — but only on
+    /// the device belonging to the account's *owner*; every other team member's client also
+    /// receives this same Realtime insert (it's team-wide, not targeted), so the owner check here
+    /// is what keeps it from popping up on everyone's screen.
+    private func handleReauthRequest(_ request: ReauthRequest) {
+        guard let poolAccount = poolAccountsByUuid.values.first(where: { $0.id == request.accountId }),
+              poolAccount.ownerUserId == myUserId
+        else { return }
+        let requesterName = membersById[request.requestedBy]?.displayName ?? "A teammate"
+        toast = "\(requesterName) is requesting re-login on \(poolAccount.email)"
+        Diagnostics.log("reauth requested by \(requesterName) for \(poolAccount.email)")
+        NotificationService.post(
+            title: "Re-login requested",
+            body: "\(requesterName) is requesting re-login on this Claude account (\(poolAccount.email))"
+        )
     }
 
     /// The merged list the panel actually renders — see `DisplayAccount`'s header comment for

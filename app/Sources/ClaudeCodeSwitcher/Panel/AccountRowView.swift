@@ -10,6 +10,7 @@ struct AccountRowView: View {
     let onSwitch: () -> Void
     let onRemove: () -> Void
     let onSetShareMode: (ShareMode) -> Void
+    let onRequestReauth: () -> Void
 
     @State private var isHovering = false
 
@@ -43,7 +44,11 @@ struct AccountRowView: View {
                             .foregroundStyle(Theme.textDim)
                     }
 
-                    if let claimedByName = account.claimedByName {
+                    if account.poolAccount?.status == .quarantined {
+                        Text(isOwner ? "needs re-login" : "needs re-login — right-click to notify the owner")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Theme.crit)
+                    } else if let claimedByName = account.claimedByName {
                         Text("held by \(claimedByName)")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(Theme.warn)
@@ -82,6 +87,10 @@ struct AccountRowView: View {
                     .disabled(poolAccount.shareMode == .shared)
                 Button("Visibility only") { onSetShareMode(.visibilityOnly) }
                     .disabled(poolAccount.shareMode == .visibilityOnly)
+            } else if !isOwner, account.poolAccount != nil {
+                // Not gated on already being quarantined — the person noticing a problem is
+                // often ahead of the app's own diagnosis (see AppState.requestReauth).
+                Button("Request re-login…", action: onRequestReauth)
             }
         }
     }

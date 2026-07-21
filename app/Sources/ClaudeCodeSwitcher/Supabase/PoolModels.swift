@@ -186,6 +186,24 @@ struct PollLeaderRow: Codable, Equatable {
     }
 }
 
+/// One "please re-login" event (0004_reauth_requests.sql) — an append-only audit trail, same
+/// shape as switch_log/turn_log. The owner's `AppState` subscribes to inserts targeting accounts
+/// it owns to fire the actual system notification; everyone else can read it for context (whose
+/// idea was it), but only the RPC that created it and the owner's own recovery check ever act on it.
+struct ReauthRequest: Codable, Identifiable {
+    let id: UUID
+    let accountId: UUID
+    let requestedBy: UUID
+    let requestedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case accountId = "account_id"
+        case requestedBy = "requested_by"
+        case requestedAt = "requested_at"
+    }
+}
+
 // MARK: - RPC parameter payloads (Encodable; match the SQL functions' argument names exactly)
 
 struct CreateTeamParams: Encodable { let p_name: String }

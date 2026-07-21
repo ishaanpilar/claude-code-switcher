@@ -293,6 +293,29 @@ struct PoolSyncService {
         try await client.from("switch_log").insert(payload).execute()
     }
 
+    // MARK: - Re-login requests (0004_reauth_requests.sql)
+
+    /// Flags a (usually shared) account as needing re-login and records who asked — any team
+    /// member, not just the owner, since whoever hits the failure is often not the account's
+    /// owner. Sets `accounts.status = 'quarantined'`, visible to everyone over the existing
+    /// `accounts` Realtime subscription.
+    @discardableResult
+    func requestReauth(accountId: UUID) async throws -> ReauthRequest {
+        try await client
+            .rpc("request_reauth", params: ReleaseClaimParams(p_account: accountId))
+            .single()
+            .execute()
+            .value
+    }
+
+    /// Owner-only — flips the account back to `active`. Called automatically by `AppState` once a
+    /// post-re-login usage read actually succeeds, not from a manual "mark resolved" button.
+    func clearAccountReauth(accountId: UUID) async throws {
+        try await client
+            .rpc("clear_account_reauth", params: ReleaseClaimParams(p_account: accountId))
+            .execute()
+    }
+
     // MARK: - Realtime
 
     /// One `AnyAction` stream per table, decoded to the caller's model type. The caller is

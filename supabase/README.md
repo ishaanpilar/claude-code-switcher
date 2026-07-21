@@ -63,6 +63,7 @@ everything here runs as an authenticated end user through RLS).
 | `20260721000001_account_tokens_upsert_fix.sql` | `account_tokens.recipient_key` generated column + upsert-targetable unique constraint |
 | `20260721000002_usage_history_trigger.sql` | `usage_current_history_trigger` — mirrors every `usage_current` write into `usage_history`, which had no writer before this |
 | `20260721000003_ownership_and_leave.sql` | `transfer_account_ownership()` and `leave_team()` RPCs (Settings window's My Accounts / Team tabs) |
+| `20260721000004_reauth_requests.sql` | `reauth_requests` table + `request_reauth()`/`clear_account_reauth()` RPCs — makes quarantine a shared, Realtime-visible `accounts.status`, and adds the "Request re-login" notification flow |
 
 Run `mcp: get_advisors(type="security")` after applying — RLS policies are
 easy to get subtly wrong, and that check catches it fast.
