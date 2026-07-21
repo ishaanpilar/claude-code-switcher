@@ -1,6 +1,6 @@
 [project]
 name = "ccswitch-core"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local credential engine for Claude Code Switcher (macOS). Spawned as a short-lived subprocess by the Swift menu bar app; one command per invocation, JSON on stdout."
 requires-python = ">=3.12"
 dependencies = [
