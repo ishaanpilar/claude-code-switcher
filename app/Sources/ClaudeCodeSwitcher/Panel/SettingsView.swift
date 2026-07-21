@@ -11,21 +11,23 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var state: AppState
     @ObservedObject var pool: PoolState
-    @State private var pane: Pane = .accounts
+    @ObservedObject var router: SettingsRouter
 
     enum Pane: String, CaseIterable, Identifiable {
         case accounts = "My Accounts"
+        case teamUsage = "Team usage"
         case autoSwitch = "Auto-switch"
         case team = "Team"
         case general = "General"
         case about = "About"
 
         var id: String { rawValue }
-        /// The four configuration panes — About is handled separately (pinned to the bottom).
-        static var mainCases: [Pane] { [.accounts, .autoSwitch, .team, .general] }
+        /// The configuration panes — About is handled separately (pinned to the bottom).
+        static var mainCases: [Pane] { [.accounts, .teamUsage, .autoSwitch, .team, .general] }
         var icon: String {
             switch self {
             case .accounts: return "person.crop.circle"
+            case .teamUsage: return "chart.bar.xaxis"
             case .autoSwitch: return "bolt"
             case .team: return "person.3"
             case .general: return "gearshape"
@@ -37,7 +39,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-                List(selection: Binding(get: { pane }, set: { pane = $0 ?? pane })) {
+                List(selection: Binding(get: { router.pane }, set: { router.pane = $0 ?? router.pane })) {
                     ForEach(Pane.mainCases) { p in
                         Label(p.rawValue, systemImage: p.icon).tag(p)
                     }
@@ -45,7 +47,7 @@ struct SettingsView: View {
 
                 Spacer(minLength: 0)
                 Divider()
-                Button { pane = .about } label: {
+                Button { router.pane = .about } label: {
                     HStack(spacing: 8) {
                         Image(systemName: Pane.about.icon).frame(width: 18)
                         Text("About").font(.body)
@@ -56,7 +58,7 @@ struct SettingsView: View {
                     .contentShape(Rectangle())
                     .background(
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(pane == .about ? Color.accentColor.opacity(0.18) : .clear)
+                            .fill(router.pane == .about ? Color.accentColor.opacity(0.18) : .clear)
                     )
                 }
                 .buttonStyle(.plain)
@@ -65,17 +67,18 @@ struct SettingsView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
         } detail: {
             Group {
-                switch pane {
+                switch router.pane {
                 case .accounts: MyAccountsPane(state: state)
+                case .teamUsage: TeamUsagePane(state: state, pool: pool)
                 case .autoSwitch: AutoSwitchPane(state: state)
                 case .team: TeamPane(state: state, pool: pool)
                 case .general: GeneralPane(state: state)
                 case .about: AboutPane()
                 }
             }
-            .navigationTitle(pane.rawValue)
+            .navigationTitle(router.pane.rawValue)
         }
-        .frame(minWidth: 720, idealWidth: 760, minHeight: 480, idealHeight: 520)
+        .frame(minWidth: 720, idealWidth: 780, minHeight: 480, idealHeight: 540)
     }
 }
 
@@ -246,10 +249,32 @@ private struct TeamPane: View {
     @State private var inviteCode: String?
     @State private var isGenerating = false
     @State private var confirmLeave = false
+    @State private var showAddTeam = false
+    @State private var addMode: AddMode = .create
+    @State private var newTeamName = ""
+    @State private var joinCode = ""
+    @State private var joinKey = ""
+
+    enum AddMode: String, CaseIterable, Identifiable { case create = "Create", join = "Join"; var id: String { rawValue } }
 
     var body: some View {
         Form {
-            if case .ready(let team, let member) = pool.step {
+            if pool.isLocalOnlyMode {
+                localOnlySection
+            } else if case .ready(let team, let member) = pool.step {
+                if pool.availableTeams.count > 1 {
+                    Section {
+                        Picker("Active team", selection: Binding(
+                            get: { pool.activeTeamId ?? team.id },
+                            set: { pool.switchActiveTeam(to: $0) }
+                        )) {
+                            ForEach(pool.availableTeams) { t in Text(t.name).tag(t.id) }
+                        }
+                    } footer: {
+                        Text("Switching changes which pool the app shares and switches accounts within. Your teams never see each other.")
+                    }
+                }
+
                 Section {
                     LabeledContent("Team", value: team.name)
                     LabeledContent("Your role", value: member.role == "owner" ? "Owner" : "Member")
@@ -301,6 +326,8 @@ private struct TeamPane: View {
                     }
                 }
 
+                addAnotherTeamSection
+
                 Section {
                     Button("Sign out") { Task { await pool.signOut() } }
                     Button("Leave team", role: .destructive) { confirmLeave = true }
@@ -316,6 +343,57 @@ private struct TeamPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// Create or join an *additional* team from Settings (the multi-team story: a separate pool
+    /// with a different set of people). Same RPCs as first-time onboarding; joining a team
+    /// switches to it automatically.
+    private var addAnotherTeamSection: some View {
+        Section {
+            if !showAddTeam {
+                Button("Create or join another team…") { showAddTeam = true }
+            } else {
+                Picker("", selection: $addMode) {
+                    ForEach(AddMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                if addMode == .create {
+                    TextField("New team name", text: $newTeamName)
+                    Button("Create team") {
+                        Task { await pool.createTeam(name: newTeamName); reset() }
+                    }
+                    .disabled(newTeamName.isEmpty || pool.isBusy)
+                } else {
+                    TextField("Invite code", text: $joinCode)
+                    TextField("Team key", text: $joinKey)
+                    Button("Join team") {
+                        Task { await pool.joinTeam(code: joinCode, teamKeyString: joinKey); reset() }
+                    }
+                    .disabled(joinCode.isEmpty || joinKey.isEmpty || pool.isBusy)
+                }
+                Button("Cancel", role: .cancel) { reset() }
+            }
+        } header: {
+            Text("Another team")
+        }
+    }
+
+    private var localOnlySection: some View {
+        Section {
+            Text("You're in offline mode — the app switches between just this Mac's own accounts, with no cloud and no sharing.")
+                .foregroundStyle(.secondary)
+            Button("Sign in to use a team") { pool.exitLocalOnly() }
+        } header: {
+            Text("Offline mode")
+        }
+    }
+
+    private func reset() {
+        showAddTeam = false
+        newTeamName = ""; joinCode = ""; joinKey = ""
+        addMode = .create
     }
 
     private func copy(_ s: String) {

@@ -10,15 +10,26 @@ import Supabase
 struct TeamService {
     private let client = SupabaseClientProvider.shared
 
-    /// The caller's own membership row, if they're on a team yet. `nil` means "needs onboarding."
-    func myMembership(userId: UUID) async throws -> Member? {
-        let members: [Member] = try await client
+    /// Every team this user belongs to (multi-team). Empty means "needs onboarding." RLS's
+    /// `members_select` returns a row for each team the caller is in, so this naturally spans all
+    /// of them without a special query.
+    func myMemberships(userId: UUID) async throws -> [Member] {
+        try await client
             .from("members")
             .select()
             .eq("user_id", value: userId)
             .execute()
             .value
-        return members.first
+    }
+
+    func teams(ids: [UUID]) async throws -> [Team] {
+        guard !ids.isEmpty else { return [] }
+        return try await client
+            .from("teams")
+            .select()
+            .in("id", values: ids)
+            .execute()
+            .value
     }
 
     func team(id: UUID) async throws -> Team {

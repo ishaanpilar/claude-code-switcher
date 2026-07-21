@@ -27,6 +27,18 @@ cp "$SCRIPT_DIR/Info.plist" "$BUNDLE/Contents/Info.plist"
 cp "$APP_DIR/Resources/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"
 cp "$APP_DIR/Resources/logo.png" "$BUNDLE/Contents/Resources/logo.png"
 
+# The frozen ccswitch-core binary — CoreBridge.resolveDefault() finds it here (Resources/
+# ccswitch-core) and prefers it over the dev `uv run` path, so the packaged app is self-contained
+# (no Python/uv on the user's machine). Build it with core/build_binary.sh first.
+CORE_BIN="$APP_DIR/../core/dist/ccswitch-core"
+if [ -x "$CORE_BIN" ]; then
+  cp "$CORE_BIN" "$BUNDLE/Contents/Resources/ccswitch-core"
+  chmod +x "$BUNDLE/Contents/Resources/ccswitch-core"
+  echo "Bundled ccswitch-core binary"
+else
+  echo "WARNING: core/dist/ccswitch-core not found — run core/build_binary.sh. The app will fall back to dev (uv run) mode."
+fi
+
 codesign --force --deep --sign - "$BUNDLE"
 
 # Forces Launch Services to (re-)read Info.plist's CFBundleURLTypes now, rather than waiting for

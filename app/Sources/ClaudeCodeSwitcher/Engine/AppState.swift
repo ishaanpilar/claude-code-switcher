@@ -354,6 +354,10 @@ final class AppState: ObservableObject {
     /// lifetime, independent of whether the panel view happens to be on-screen at the time.
     func configurePool(team: Team, member: Member, auth: AuthController) {
         guard currentTeam?.id != team.id else { return }
+        // Switching teams (multi-team): tear the previous team's live wiring down first so its
+        // Realtime subscriptions, poll-leader lease, engines and cached rows don't leak into or
+        // race the new team. A first-time setup (currentTeam == nil) skips straight past this.
+        if currentTeam != nil { teardownPool() }
         currentTeam = team
         currentMember = member
         teamKey = TeamKeyStore.load(teamId: team.id)
@@ -383,6 +387,30 @@ final class AppState: ObservableObject {
         }
 
         autoSwitchEngine.start(settings: autoSwitchSettings, teamKey: teamKey, myUserId: member.userId, teamId: team.id)
+    }
+
+    /// Unwinds everything `configurePool` set up for the current team — used when switching to a
+    /// different team, so the app can be reconfigured cleanly. Clears pool-derived caches but
+    /// leaves `usageByAccount` (a later `refresh()` rebuilds local usage; stale pool entries drop
+    /// out once `poolAccountsByUuid` no longer references them).
+    private func teardownPool() {
+        realtimeTasks.forEach { $0.cancel() }
+        realtimeTasks = []
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        heldClaimAccountId = nil
+        autoSwitchEngine.stop()
+        pollLeaderController.stop()
+        pollLeaderStatusTimer?.invalidate()
+        pollLeaderStatusTimer = nil
+        isPollLeader = false
+        authCancellable?.cancel()
+        poolAccountsByUuid = [:]
+        claimsByAccountId = [:]
+        membersById = [:]
+        currentTeam = nil
+        currentMember = nil
+        teamKey = nil
     }
 
     // MARK: - Attribution (turn-log hook — BUILD_PLAN.md section 8)

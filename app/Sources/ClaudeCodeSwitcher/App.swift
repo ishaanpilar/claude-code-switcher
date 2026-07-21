@@ -1,29 +1,31 @@
 import SwiftUI
 
+/// Lets the menu-bar panel open the Settings window on a specific pane (e.g. "Team usage…" jumps
+/// straight to the usage dashboard). Shared between the panel and `SettingsView` so a click in one
+/// selects a pane in the other — the Team-usage digest lives inside Settings now, not a window.
+@MainActor
+final class SettingsRouter: ObservableObject {
+    @Published var pane: SettingsView.Pane = .accounts
+}
+
 @main
 struct ClaudeCodeSwitcherApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var state = AppState()
     @StateObject private var pool = PoolState()
+    @StateObject private var router = SettingsRouter()
 
     var body: some Scene {
         MenuBarExtra(state.titleText, systemImage: "arrow.triangle.2.circlepath") {
-            RootView(state: state, pool: pool)
+            RootView(state: state, pool: pool, router: router)
         }
         .menuBarExtraStyle(.window)
 
-        // A real window, not menu bar content — the Team-usage digest (BUILD_PLAN.md section 8)
-        // is a data table, not a quick-glance status. `.accessory` activation policy (below)
-        // still allows normal windows to open; it only suppresses the Dock icon.
-        WindowGroup(id: "team-usage") {
-            TeamUsageView(state: state, pool: pool)
-        }
-        .windowResizability(.contentSize)
-
         // The full Settings window — the deep-configuration surface the menu-bar dropdown
-        // deliberately isn't. Opened via "Settings…" in the panel (and the standard Cmd-,).
+        // deliberately isn't, and now the home of the Team-usage dashboard too. Opened via
+        // "Settings…" / "Team usage…" in the panel, and the standard Cmd-,.
         Window("Settings", id: "settings") {
-            SettingsView(state: state, pool: pool)
+            SettingsView(state: state, pool: pool, router: router)
         }
         .windowResizability(.contentMinSize)
         .keyboardShortcut(",", modifiers: .command)
@@ -35,23 +37,61 @@ struct ClaudeCodeSwitcherApp: App {
 private struct RootView: View {
     @ObservedObject var state: AppState
     @ObservedObject var pool: PoolState
+    @ObservedObject var router: SettingsRouter
 
     var body: some View {
-        if case .ready = pool.step {
-            PanelView(state: state, pool: pool)
-        } else {
+        switch pool.step {
+        case .ready, .localOnly:
+            // Both show the real panel — `.localOnly` just means no team is wired up, and every
+            // pool feature already guards on `currentTeam != nil`, so the panel degrades to
+            // local-account switching on its own.
+            PanelView(state: state, pool: pool, router: router)
+        default:
             OnboardingView(pool: pool)
         }
     }
 }
 
-/// `MenuBarExtra` alone doesn't hide the Dock icon / Cmd-Tab entry the way rumps's accessory
-/// mode does for claude-swap's Python menu bar (see the earlier design discussion) — that's set
-/// explicitly here, plus where app-lifetime state (AppState.start/stop) hooks in.
+/// The app starts menu-bar-only (`.accessory`: no Dock icon, no Cmd-Tab entry). But that policy
+/// is exactly why a plain `openWindow` used to open the Settings window *behind* whatever app was
+/// frontmost and refuse to come forward — an accessory app can't activate itself. `WindowManager`
+/// fixes that "window goes to the back" bug the proper-app way: while any real window is open the
+/// app becomes `.regular` (real app, comes to front, shows in the Dock and Cmd-Tab), and reverts
+/// to `.accessory` once the last one closes — so the menu bar is just the indicator and the
+/// window is the actual app, which is how the user wants it to feel.
+enum WindowManager {
+    /// Call right before `openWindow(...)`. Promotes to a real app and activates so the window
+    /// that's about to appear lands in front and takes focus.
+    @MainActor static func prepareToShowWindow() {
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    /// Re-checks after a window closes: if no ordinary app windows remain (the MenuBarExtra
+    /// dropdown/panel doesn't count — it isn't a titled `NSWindow`), drop back to accessory.
+    @MainActor static func windowDidClose() {
+        // Deferred a runloop tick so the closing window is actually gone from `windows` first.
+        DispatchQueue.main.async {
+            let hasRealWindow = NSApplication.shared.windows.contains { window in
+                window.isVisible && window.canBecomeMain && !window.title.isEmpty
+            }
+            if !hasRealWindow {
+                NSApplication.shared.setActivationPolicy(.accessory)
+            }
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
         NotificationService.requestAuthorizationIfNeeded()
+        // Any real window closing may mean we should drop back to accessory (menu-bar-only).
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in WindowManager.windowDidClose() }
+        }
     }
 
     /// Catches the `ccswitch://auth-callback` deep link (see `Client.swift`'s `redirectToURL`)

@@ -8,6 +8,7 @@ import SwiftUI
 struct PanelView: View {
     @ObservedObject var state: AppState
     @ObservedObject var pool: PoolState
+    @ObservedObject var router: SettingsRouter
     @State private var showShareModePrompt = false
     @State private var showInvitePopover = false
     @State private var inviteCode: String?
@@ -140,10 +141,6 @@ struct PanelView: View {
                     Task { await state.switchToBestAccount() }
                 }
                 .disabled(state.isSwitching)
-                PanelActionButton(title: "Rotate to next account", systemImage: "arrow.triangle.2.circlepath") {
-                    Task { await state.rotateAccount() }
-                }
-                .disabled(state.isSwitching)
             }
             PanelActionButton(title: "Add current account", systemImage: "plus.circle") {
                 if isPoolReady {
@@ -152,12 +149,9 @@ struct PanelView: View {
                     Task { await state.addCurrentAccount() }
                 }
             }
-            if isPoolReady {
-                PanelActionButton(title: "Team usage…", systemImage: "chart.bar.doc.horizontal") {
-                    openWindow(id: "team-usage")
-                }
-            }
             PanelActionButton(title: "Settings…", systemImage: "gearshape") {
+                router.pane = .accounts
+                WindowManager.prepareToShowWindow()
                 openWindow(id: "settings")
             }
             if isTeamOwner {

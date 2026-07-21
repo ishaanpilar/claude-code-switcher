@@ -61,8 +61,8 @@ struct OnboardingView: View {
             TeamSetupStep(pool: pool)
         case .needsTeamKey(let team):
             TeamKeyRecoveryStep(pool: pool, team: team)
-        case .ready:
-            EmptyView()  // RootView switches to PanelView before this ever renders
+        case .ready, .localOnly:
+            EmptyView()  // RootView switches to PanelView before either of these ever renders
         }
     }
 }
@@ -91,6 +91,16 @@ private struct SignInStep: View {
             .buttonStyle(.borderedProminent)
             .tint(Theme.accent)
             .disabled(email.isEmpty || pool.isBusy)
+
+            Divider().padding(.vertical, 2)
+
+            Text("Just juggling your own accounts? Skip the cloud entirely.")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.textDim)
+            Button("Use locally, without an account") { pool.enableLocalOnly() }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.accent)
         }
     }
 }
