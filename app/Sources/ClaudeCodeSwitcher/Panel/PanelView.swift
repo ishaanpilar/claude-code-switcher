@@ -82,6 +82,8 @@ struct PanelView: View {
                             .fill(state.isPollLeader ? Theme.ok : Theme.textDim.opacity(0.4))
                             .frame(width: 6, height: 6)
                             .help(state.isPollLeader ? "This device is the poll leader" : "Another device is the poll leader")
+                    } else if pool.isLocalOnlyMode {
+                        offlineBadge
                     }
                 }
                 Text(state.activeAccount?.email ?? "Not logged in")
@@ -105,6 +107,23 @@ struct PanelView: View {
             }
         }
         .padding(.horizontal, 12)
+    }
+
+    /// Visible proof, not just an internal implementation detail — this is the direct answer to
+    /// "how do I know nothing is being shared right now": offline mode means `configurePool` is
+    /// never called, so no Supabase client call, Realtime subscription, or poll-leader loop ever
+    /// starts (see AppState.swift's header comment on `configurePool` for the single entry point
+    /// that gates all of it). The badge just makes that structural fact visible in the UI.
+    private var offlineBadge: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "wifi.slash").font(.system(size: 8))
+            Text("Offline").font(.system(size: 9, weight: .semibold))
+        }
+        .foregroundStyle(Theme.textDim)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
+        .background(Capsule().fill(Theme.surface2))
+        .help("Local-only mode — nothing leaves this Mac. No account or usage data is sent anywhere unless you sign in to a team.")
     }
 
     private var accountList: some View {
