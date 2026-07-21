@@ -109,12 +109,18 @@ struct TeamUsagePane: View {
         let id: String
         let email: String
         let pct: Double?
+        let resetsInLabel: String?
     }
 
     private var accountBars: [AccountBar] {
         state.displayAccounts.map { acct in
-            let pct = window == .fiveHour ? acct.usage?.fiveHour?.pct : acct.usage?.sevenDay?.pct
-            return AccountBar(id: acct.accountUuid, email: acct.email, pct: pct)
+            let usageWindow = window == .fiveHour ? acct.usage?.fiveHour : acct.usage?.sevenDay
+            return AccountBar(
+                id: acct.accountUuid,
+                email: acct.email,
+                pct: usageWindow?.pct,
+                resetsInLabel: usageWindow?.resetsInLabel
+            )
         }
         .sorted { ($0.pct ?? -1) > ($1.pct ?? -1) }
     }
@@ -149,6 +155,10 @@ struct TeamUsagePane: View {
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
                             .foregroundStyle(bar.pct.map { Theme.usageColor(forPct: $0) } ?? Theme.textDim)
                             .frame(width: 44, alignment: .trailing)
+                        Text(bar.resetsInLabel ?? "")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textDim)
+                            .frame(width: 90, alignment: .trailing)
                     }
                 }
                 Text("Bars show the \(window.rawValue) window. Green has room; red is near the limit.")

@@ -54,6 +54,31 @@ struct UsageWindow: Codable, Equatable {
         case pct
         case resetsAt = "resets_at"
     }
+
+    /// "resets in 3h 12m" (or "resets now" once past it) for display next to a usage bar.
+    /// nil when the API didn't send a reset time for this window.
+    var resetsInLabel: String? { Self.countdownLabel(to: resetsAt) }
+
+    /// Shared by both usage windows and `ScopedUsage` — same wire format, same countdown shape
+    /// as the (currently unused) Python-side `oauth.format_reset`, kept in sync intentionally.
+    static func countdownLabel(to resetsAt: String?) -> String? {
+        guard let resetsAt, let date = parseISO8601(resetsAt) else { return nil }
+        let seconds = Int(date.timeIntervalSinceNow)
+        if seconds <= 0 { return "resets now" }
+        let days = seconds / 86400
+        let hours = (seconds % 86400) / 3600
+        let minutes = (seconds % 3600) / 60
+        if days > 0 { return "resets in \(days)d \(hours)h" }
+        if hours > 0 { return "resets in \(hours)h \(minutes)m" }
+        return "resets in \(minutes)m"
+    }
+
+    private static func parseISO8601(_ s: String) -> Date? {
+        if let d = ISO8601DateFormatter().date(from: s) { return d }
+        let withFractional = ISO8601DateFormatter()
+        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return withFractional.date(from: s)
+    }
 }
 
 struct ScopedUsage: Codable, Equatable, Identifiable {
