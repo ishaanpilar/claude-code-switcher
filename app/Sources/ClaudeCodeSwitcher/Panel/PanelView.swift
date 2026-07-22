@@ -184,6 +184,7 @@ struct PanelView: View {
                         code: inviteCode,
                         teamKey: currentTeamKey,
                         isLoading: isGeneratingInvite,
+                        errorMessage: pool.lastError,
                         onRegenerate: { generateInvite(force: true) }
                     )
                 }
@@ -262,6 +263,7 @@ private struct InvitePopoverView: View {
     let code: String?
     let teamKey: String?
     let isLoading: Bool
+    let errorMessage: String?
     let onRegenerate: () -> Void
 
     var body: some View {
@@ -274,6 +276,11 @@ private struct InvitePopoverView: View {
             if isLoading {
                 ProgressView().controlSize(.small)
             } else {
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.crit)
+                }
                 labeledCopyBlock(title: "Invite code", value: code)
                 labeledCopyBlock(title: "Team key", value: teamKey)
                 Button("Generate a new code", action: onRegenerate)

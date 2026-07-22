@@ -1,6 +1,9 @@
 # Applying the schema
 
-**Status: applied.** All 10 migrations are live on `ciqczzwiuigllkpdebup` —
+**Status: `20260723000001_fix_create_team_invite_random.sql` still needs to be applied** —
+confirmed via production logs that `create_team_invite()` is currently broken (see its
+entry in the table below). Everything through `20260721000004` was previously reported
+applied on `ciqczzwiuigllkpdebup` —
 applied directly via `psql` against the pooler connection string (the
 Supabase MCP tools in this session are connected to a different Supabase
 account, so `apply_migration` wasn't an option; see the conversation history
@@ -64,6 +67,7 @@ everything here runs as an authenticated end user through RLS).
 | `20260721000002_usage_history_trigger.sql` | `usage_current_history_trigger` — mirrors every `usage_current` write into `usage_history`, which had no writer before this |
 | `20260721000003_ownership_and_leave.sql` | `transfer_account_ownership()` and `leave_team()` RPCs (Settings window's My Accounts / Team tabs) |
 | `20260721000004_reauth_requests.sql` | `reauth_requests` table + `request_reauth()`/`clear_account_reauth()` RPCs — makes quarantine a shared, Realtime-visible `accounts.status`, and adds the "Request re-login" notification flow |
+| `20260723000001_fix_create_team_invite_random.sql` | Fixes `create_team_invite()`, which was failing in production with `42883: function gen_random_bytes(integer) does not exist` (pgcrypto lives outside this function's `public` search_path) — switches to core `gen_random_uuid()`, no extension dependency |
 
 Run `mcp: get_advisors(type="security")` after applying — RLS policies are
 easy to get subtly wrong, and that check catches it fast.

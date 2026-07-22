@@ -312,6 +312,10 @@ private struct TeamPane: View {
                         }
                         .disabled(isGenerating)
 
+                        if !isGenerating, let error = pool.lastError {
+                            Text(error).foregroundStyle(.red)
+                        }
+
                         if let inviteCode {
                             LabeledContent("Invite code") {
                                 HStack {

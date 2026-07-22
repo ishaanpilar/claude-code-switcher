@@ -254,6 +254,7 @@ final class PoolState: ObservableObject {
     /// `joinTeam` requires a code nothing else produces.
     func createInvite() async -> String? {
         guard case .ready(let team, let member) = step, member.role == "owner" else { return nil }
+        lastError = nil  // clear any stale error so a leftover from an unrelated action can't be mistaken for this call's result
         do {
             return try await teamService.createInvite(teamId: team.id)
         } catch {
