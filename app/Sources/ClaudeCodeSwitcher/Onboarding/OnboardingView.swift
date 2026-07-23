@@ -7,6 +7,8 @@ import SwiftUI
 /// itself uses.
 struct OnboardingView: View {
     @ObservedObject var pool: PoolState
+    @ObservedObject var router: SettingsRouter
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -20,6 +22,8 @@ struct OnboardingView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.crit)
             }
+            Divider()
+            footer
         }
         .padding(16)
         .frame(width: 300)
@@ -30,6 +34,35 @@ struct OnboardingView: View {
         Text("Claude Code Switcher")
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(Theme.text)
+    }
+
+    /// Present on every onboarding step (not just sign-in) — without this, someone signed in but
+    /// not yet on a team (`.needsTeamSetup`) or missing their team key (`.needsTeamKey`) had no way
+    /// to reach About or even quit the app short of Force Quit: this is a `MenuBarExtra` accessory
+    /// app with no Dock icon and no standard app menu, so there's no other Quit anywhere on these
+    /// screens.
+    private var footer: some View {
+        HStack {
+            Button {
+                router.pane = .about
+                WindowManager.prepareToShowWindow()
+                openWindow(id: "settings")
+            } label: {
+                Image(systemName: "info.circle")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.textDim)
+
+            Spacer()
+
+            Button {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Image(systemName: "power")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.textDim)
+        }
     }
 
     private var isChecking: Bool {
@@ -163,6 +196,16 @@ private struct TeamSetupStep: View {
                 } else {
                     joinForm
                 }
+
+                Divider().padding(.vertical, 2)
+
+                Text("Changed your mind about a team? Switch to juggling your own accounts locally instead.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textDim)
+                Button("Use locally, without an account") { pool.enableLocalOnly() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.accent)
             }
         }
     }

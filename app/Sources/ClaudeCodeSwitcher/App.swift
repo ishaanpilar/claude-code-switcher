@@ -47,7 +47,7 @@ private struct RootView: View {
             // local-account switching on its own.
             PanelView(state: state, pool: pool, router: router)
         default:
-            OnboardingView(pool: pool)
+            OnboardingView(pool: pool, router: router)
         }
     }
 }
