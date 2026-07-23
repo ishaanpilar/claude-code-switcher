@@ -592,6 +592,7 @@ final class AppState: ObservableObject {
     /// account you both own and hold locally disappears from both places in one action.
     func removeFromPool(_ account: DisplayAccount) async {
         guard let poolAccount = account.poolAccount else { return }
+        lastError = nil  // clear any stale error so it can't be mistaken for this attempt's result
         do {
             try await poolSync.removeAccountFromPool(accountId: poolAccount.id)
             if account.isLocallyKnown {

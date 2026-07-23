@@ -1,8 +1,9 @@
 # Applying the schema
 
-**Status: `20260723000001_fix_create_team_invite_random.sql` still needs to be applied** —
-confirmed via production logs that `create_team_invite()` is currently broken (see its
-entry in the table below). Everything through `20260721000004` was previously reported
+**Status: applied through `20260723000002`.** `20260723000001` (invite-generation fix) and
+`20260723000002` (switch_log delete-cascade fix, see its entry in the table below) were both
+applied directly via `psql` against the pooler connection string this session, same path as
+everything before them. Everything through `20260721000004` was previously reported
 applied on `ciqczzwiuigllkpdebup` —
 applied directly via `psql` against the pooler connection string (the
 Supabase MCP tools in this session are connected to a different Supabase
@@ -68,6 +69,7 @@ everything here runs as an authenticated end user through RLS).
 | `20260721000003_ownership_and_leave.sql` | `transfer_account_ownership()` and `leave_team()` RPCs (Settings window's My Accounts / Team tabs) |
 | `20260721000004_reauth_requests.sql` | `reauth_requests` table + `request_reauth()`/`clear_account_reauth()` RPCs — makes quarantine a shared, Realtime-visible `accounts.status`, and adds the "Request re-login" notification flow |
 | `20260723000001_fix_create_team_invite_random.sql` | Fixes `create_team_invite()`, which was failing in production with `42883: function gen_random_bytes(integer) does not exist` (pgcrypto lives outside this function's `public` search_path) — switches to core `gen_random_uuid()`, no extension dependency |
+| `20260723000002_switch_log_account_delete_fix.sql` | Fixes "Remove from pool" failing on every account, always — `switch_log.account_from`/`account_to` had no `ON DELETE` rule (unlike sibling `turn_log.account_id`, which already used `SET NULL`), so any account with switch history (i.e. every account) hit a foreign-key violation on delete. Now matches `turn_log`'s `ON DELETE SET NULL` |
 
 Run `mcp: get_advisors(type="security")` after applying — RLS policies are
 easy to get subtly wrong, and that check catches it fast.

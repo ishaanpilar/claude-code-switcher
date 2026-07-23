@@ -37,6 +37,24 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            settingsContent
+            // Previously nothing in this window ever showed state.lastError, so a failed action
+            // (e.g. "Remove from pool" hitting a server-side error) looked identical to a
+            // successful one — the row just silently stayed put with no explanation anywhere.
+            if let error = state.lastError {
+                Divider()
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(minWidth: 720, idealWidth: 780, minHeight: 480, idealHeight: 540)
+    }
+
+    private var settingsContent: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
                 List(selection: Binding(get: { router.pane }, set: { router.pane = $0 ?? router.pane })) {
