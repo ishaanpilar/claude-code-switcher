@@ -6,6 +6,20 @@
     <description>Update feed for Claude Code Switcher.</description>
     <language>en-us</language>
     <item>
+      <title>Version 0.6</title>
+      <pubDate>Thu, 23 Jul 2026 08:36:25 +0000</pubDate>
+      <sparkle:version>6</sparkle:version>
+      <sparkle:shortVersionString>0.6</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <ul>
+          <li>Fixed: the remove/trash button on account rows didn't respond to clicks.</li>
+          <li>Fixed: onboarding had no way to quit, see About, or switch to local-only mode once past the first sign-in screen.</li>
+        </ul>
+      ]]></description>
+      <enclosure url="https://github.com/ishaanpilar/claude-code-switcher/releases/download/v0.6.0/ClaudeCodeSwitcher-0.6.zip" type="application/octet-stream" sparkle:edSignature="yfB6SWW16+wKddMqVu8wox5pxX1UPjnjz2HPHRNb4sPRkIFtiRvYM44xD6AXtS5n0pVE6XLycWBUwzwdE3crCA==" length="15959035" />
+    </item>
+    <item>
       <title>Version 0.5</title>
       <pubDate>Thu, 23 Jul 2026 08:20:56 +0000</pubDate>
       <sparkle:version>5</sparkle:version>
