@@ -22,6 +22,16 @@ mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp "$APP_DIR/.build/$CONFIG/ClaudeCodeSwitcher" "$BUNDLE/Contents/MacOS/ClaudeCodeSwitcher"
 cp "$SCRIPT_DIR/Info.plist" "$BUNDLE/Contents/Info.plist"
 
+# Sparkle.framework (auto-update) — SwiftPM stages it right next to the built executable at
+# .build/$CONFIG/, not just somewhere in .build/artifacts/, so this is a plain cp. Package.swift's
+# linkerSettings bakes an @executable_path/../Frameworks rpath into the binary so it resolves here
+# at runtime. Hard failure, unlike the optional ccswitch-core check below: there's no fallback mode
+# once Sparkle is a compiled-in dependency — the app won't launch without it.
+SPARKLE_FW="$APP_DIR/.build/$CONFIG/Sparkle.framework"
+[ -d "$SPARKLE_FW" ] || { echo "ERROR: Sparkle.framework not found at $SPARKLE_FW — swift build should have staged it there."; exit 1; }
+mkdir -p "$BUNDLE/Contents/Frameworks"
+cp -R "$SPARKLE_FW" "$BUNDLE/Contents/Frameworks/Sparkle.framework"
+
 # App icon (AppIcon.icns, referenced by Info.plist's CFBundleIconFile) plus the logo.png the
 # About page loads at runtime. Both live in app/Resources/ (generated from app-icon.png).
 cp "$APP_DIR/Resources/AppIcon.icns" "$BUNDLE/Contents/Resources/AppIcon.icns"

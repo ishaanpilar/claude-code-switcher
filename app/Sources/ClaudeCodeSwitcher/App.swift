@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
         NotificationService.requestAuthorizationIfNeeded()
+        _ = UpdaterProvider.shared  // touching .shared the first time starts Sparkle's updater
         // Any real window closing may mean we should drop back to accessory (menu-bar-only).
         NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: nil, queue: .main

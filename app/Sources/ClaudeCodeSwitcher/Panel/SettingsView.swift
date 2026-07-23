@@ -73,7 +73,7 @@ struct SettingsView: View {
                 case .autoSwitch: AutoSwitchPane(state: state)
                 case .team: TeamPane(state: state, pool: pool)
                 case .general: GeneralPane(state: state)
-                case .about: AboutPane()
+                case .about: AboutPane(state: state)
                 }
             }
             .navigationTitle(router.pane.rawValue)
@@ -431,6 +431,10 @@ private struct GeneralPane: View {
                     get: { state.notificationsEnabled },
                     set: { state.setNotificationsEnabled($0) }
                 ))
+                Toggle("Automatically check for updates", isOn: Binding(
+                    get: { state.automaticUpdateChecksEnabled },
+                    set: { state.setAutomaticUpdateChecksEnabled($0) }
+                ))
             }
 
             Section {
@@ -457,6 +461,8 @@ private struct GeneralPane: View {
 // MARK: - About
 
 private struct AboutPane: View {
+    @ObservedObject var state: AppState
+
     private static let developerName = "Ishaan Pilar"
     private static let developerEmail = "ishaanpilar98@gmail.com"
     private static let repoURL = "https://github.com/ishaanpilar/claude-code-switcher"
@@ -496,6 +502,10 @@ private struct AboutPane: View {
                 Divider().padding(.vertical, 4)
 
                 VStack(spacing: 8) {
+                    linkButton("Check for Updates…", systemImage: "arrow.triangle.2.circlepath") {
+                        state.checkForUpdates()
+                    }
+                    .disabled(!state.canCheckForUpdates)
                     linkButton("Email the developer", systemImage: "envelope") {
                         openMail(subject: "Claude Code Switcher")
                     }

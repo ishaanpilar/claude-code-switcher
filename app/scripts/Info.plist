@@ -20,6 +20,14 @@
 	<string>0.4</string>
 	<key>CFBundleVersion</key>
 	<string>4</string>
+	<!-- Sparkle auto-update — see app/appcast.xml (served via raw.githubusercontent.com off
+	     main) and Engine/UpdaterProvider.swift. SUPublicEDKey is the public half of the EdDSA
+	     keypair `generate_keys` created once; the private half lives only in the release-
+	     builder's login Keychain and signs each release's update .zip via `sign_update`. -->
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/ishaanpilar/claude-code-switcher/main/app/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>nG8kovulV7GvHZw1XdNkvv37oRPKw+x8FEFfnF4wiQ0=</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<!-- Menu-bar-only: no Dock icon, no Cmd-Tab entry — declarative equivalent of the runtime

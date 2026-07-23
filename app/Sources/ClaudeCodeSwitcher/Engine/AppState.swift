@@ -641,6 +641,22 @@ final class AppState: ObservableObject {
         objectWillChange.send()  // stored in UserDefaults via NotificationService, not @Published
     }
 
+    // MARK: - Updates (Sparkle)
+
+    var canCheckForUpdates: Bool { UpdaterProvider.isAvailable }
+
+    func checkForUpdates() {
+        guard UpdaterProvider.isAvailable else { return }
+        UpdaterProvider.shared.checkForUpdates(nil)
+    }
+
+    var automaticUpdateChecksEnabled: Bool { UpdaterProvider.shared.updater.automaticallyChecksForUpdates }
+
+    func setAutomaticUpdateChecksEnabled(_ enabled: Bool) {
+        UpdaterProvider.shared.updater.automaticallyChecksForUpdates = enabled
+        objectWillChange.send()  // read live from SPUUpdater, not @Published
+    }
+
     private func handleAutoSwitchEvent(_ event: AutoSwitchEvent) {
         switch event {
         case .switched(let email, let trigger):
