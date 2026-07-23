@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4</string>
+	<string>0.5</string>
 	<key>CFBundleVersion</key>
-	<string>4</string>
+	<string>5</string>
 	<!-- Sparkle auto-update — see app/appcast.xml (served via raw.githubusercontent.com off
 	     main) and Engine/UpdaterProvider.swift. SUPublicEDKey is the public half of the EdDSA
 	     keypair `generate_keys` created once; the private half lives only in the release-
