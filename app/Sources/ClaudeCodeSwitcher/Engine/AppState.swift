@@ -16,7 +16,14 @@ struct DisplayAccount: Identifiable {
     let poolAccount: PoolAccount?
     let usage: Usage?
     let claim: ClaimRow?
+    /// Display name of whoever holds the reservation, or nil when nobody does. Set even when that
+    /// person is you; pair it with `claimedByMe` before deciding how to phrase it.
     let claimedByName: String?
+    /// Whether the reservation is this device's own. Without this the panel rendered your own
+    /// reservation as a warning-coloured "held by <your name>", which reads as a blocker put up by
+    /// someone else and never clears while you stay on the account, since your app keeps
+    /// heartbeating it.
+    let claimedByMe: Bool
 
     var id: String { accountUuid }
     var isActivatableHere: Bool { isLocallyKnown || poolAccount?.shareMode == .shared }
@@ -952,10 +959,12 @@ final class AppState: ObservableObject {
         // A claim only ever exists because the account's owner reserved it, so showing it honestly
         // is what makes that reservation mean anything.
         let claimedByName = claim?.heldBy.flatMap { membersById[$0]?.displayName }
+        let claimedByMe = claim?.heldBy != nil && claim?.heldBy == myUserId
         return DisplayAccount(
             accountUuid: accountUuid, email: email, organizationUuid: organizationUuid,
             isLocallyKnown: isLocallyKnown, poolAccount: poolAccount,
-            usage: usageByAccount[accountUuid], claim: claim, claimedByName: claimedByName
+            usage: usageByAccount[accountUuid], claim: claim,
+            claimedByName: claimedByName, claimedByMe: claimedByMe
         )
     }
 

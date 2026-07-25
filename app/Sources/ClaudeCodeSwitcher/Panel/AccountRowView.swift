@@ -61,6 +61,13 @@ struct AccountRowView: View {
                             Text(isOwner ? "needs re-login" : "needs re-login (right-click to notify the owner)")
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(Theme.crit)
+                        } else if account.claimedByMe {
+                            // Your own reservation is information, not an obstacle, so it reads as
+                            // such. Rendering it in the same warning style as a teammate's made an
+                            // account you were happily using look blocked.
+                            Text("reserved by you")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.textDim)
                         } else if let claimedByName = account.claimedByName {
                             Text("held by \(claimedByName)")
                                 .font(.system(size: 10, weight: .medium))
