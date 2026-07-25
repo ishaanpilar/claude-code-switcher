@@ -18,6 +18,11 @@ Apply `supabase/migrations/20260726000001_online_access_gate.sql` first (see
 `supabase/README.md`) -- the `profiles` table and the `has_online_access()`
 check must exist before this app has anything to read or enforce.
 
+Add the deployed URL (and `http://localhost:3000` for local dev) to
+**Supabase dashboard -> Authentication -> URL Configuration -> Redirect URLs**.
+Sign-in is a magic-link click, not a typed code (see below), and Supabase
+rejects the redirect if the URL isn't on that allow-list.
+
 ## Local setup
 
 ```bash
@@ -41,6 +46,11 @@ they're the publishable pair, safe to ship, same as in the Swift app.
 
 ## How the gate actually works
 
+- Sign-in is a magic-link click (`signInWithOtp` + `emailRedirectTo`), not a typed 6-digit
+  code like the Swift app. A typed code needs the "Magic Link" email template edited to print
+  `{{ .Token }}`, which isn't reliably editable on every Supabase plan; a link needs no template
+  changes at all. `supabase-js` auto-detects the session from the URL once the click lands back
+  on this page, so there's no separate "verify" step in the code.
 - `src/lib/auth.ts`'s `requireAdmin()` verifies the bearer token against
   Supabase Auth, then checks the resulting email against `ADMIN_EMAIL`. Every
   API route calls this first and 401s otherwise. Signing into this app with

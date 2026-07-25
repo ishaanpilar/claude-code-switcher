@@ -17,8 +17,7 @@ export default function Page() {
   const [session, setSession] = useState<Session | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [awaitingCode, setAwaitingCode] = useState(false);
+  const [linkSent, setLinkSent] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [users, setUsers] = useState<UserRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -57,25 +56,21 @@ export default function Page() {
     setUsers(body.users);
   }
 
-  async function sendCode() {
+  // A typed 6-digit code needs the "Magic Link" email template customized to print
+  // {{ .Token }}, which isn't guaranteed to be editable/configured on every plan. A link-click
+  // sign-in needs none of that -- it's Supabase's own default template, and supabase-js
+  // auto-detects the resulting session from the URL once the click lands back on this page.
+  async function sendMagicLink() {
     setAuthError(null);
     const { error } = await supabaseBrowser.auth.signInWithOtp({
       email,
-      options: { shouldCreateUser: false },
+      options: { shouldCreateUser: false, emailRedirectTo: window.location.origin },
     });
     if (error) {
       setAuthError(error.message);
       return;
     }
-    setAwaitingCode(true);
-  }
-
-  async function verifyCode() {
-    setAuthError(null);
-    const { error } = await supabaseBrowser.auth.verifyOtp({ email, token: code, type: "email" });
-    if (error) {
-      setAuthError(error.message);
-    }
+    setLinkSent(true);
   }
 
   async function signOut() {
@@ -114,7 +109,7 @@ export default function Page() {
     return (
       <main className="page">
         <h1>Claude Code Switcher — Admin</h1>
-        {!awaitingCode ? (
+        {!linkSent ? (
           <div className="card">
             <p>Sign in with the admin account&apos;s email.</p>
             <input
@@ -123,22 +118,16 @@ export default function Page() {
               placeholder="you@example.com"
               autoComplete="email"
             />
-            <button onClick={sendCode} disabled={!email}>
-              Send code
+            <button onClick={sendMagicLink} disabled={!email}>
+              Send sign-in link
             </button>
           </div>
         ) : (
           <div className="card">
-            <p>Enter the 6-digit code sent to {email}.</p>
-            <input
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="123456"
-              inputMode="numeric"
-            />
-            <button onClick={verifyCode} disabled={code.length < 6}>
-              Verify
-            </button>
+            <p>
+              Check {email} and click the sign-in link -- it&apos;ll bring you right back here,
+              signed in. No code to type.
+            </p>
           </div>
         )}
         {authError && <p className="error">{authError}</p>}
