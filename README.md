@@ -116,6 +116,11 @@ graph TD
 Two separate secrets on purpose: one gets you *into* the team, the other lets you
 *decrypt* shared logins.
 
+Signing in itself is open to anyone, but creating or joining a team needs the
+app's admin to grant that account access first (see `admin/README.md`). If
+you sign in before that happens, you'll see a "waiting for approval" screen
+instead of the create/join forms.
+
 ---
 
 ## 5. How accounts get shared across computers
@@ -354,7 +359,9 @@ open app/.build/ClaudeCodeSwitcher.app
 
 The app appears as an icon in your menu bar (no Dock icon). Click it to open the
 panel. The cloud side (Supabase database) is described in
-[`supabase/README.md`](supabase/README.md).
+[`supabase/README.md`](supabase/README.md), and the admin dashboard for
+granting online access and tracking signups is described in
+[`admin/README.md`](admin/README.md).
 
 ---
 

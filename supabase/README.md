@@ -4,8 +4,8 @@ Everything the app stores in the cloud. Every table has row-level security
 enabled, and every mutation either checks `is_team_member()` or goes through a
 `security definer` RPC that checks it internally.
 
-**Applied through `20260723000002`.** `20260725000001` and `20260725000002` are
-new and still need applying.
+**Applied through `20260723000002`.** `20260725000001`, `20260725000002`, and
+`20260726000001` are new and still need applying.
 
 ## Applying migrations
 
@@ -35,9 +35,12 @@ Set in `app/Sources/ClaudeCodeSwitcher/Supabase/Config.swift`:
 - `SUPABASE_ANON_KEY` is the `sb_publishable_...` key, safe to ship in the client
 
 The `sb_secret_...` key and the legacy `service_role` JWT must **never** appear
-in the Swift app or anywhere in this repo. They bypass RLS entirely and belong
-only in a trusted backend context, which this project has none of: everything
-runs as an authenticated end user through RLS.
+in the Swift app, or anywhere client-side. They bypass RLS entirely and belong
+only in a trusted backend context. The Swift app has none, and everything it
+does runs as an authenticated end user through RLS. The one exception is
+`admin/`, a small server-rendered dashboard: its API routes hold the
+service-role key as a server-only env var (never a `NEXT_PUBLIC_*` one) to list
+signups and grant/revoke `online_access` -- see `admin/README.md`.
 
 ## Migrations
 
@@ -59,3 +62,4 @@ runs as an authenticated end user through RLS.
 | `20260723000002_switch_log_account_delete_fix.sql` | Fixes "Remove from pool" failing on every account. `switch_log.account_from`/`account_to` had no `ON DELETE` rule, unlike sibling `turn_log.account_id`, so any account with switch history hit a foreign-key violation. Now matches `turn_log`'s `ON DELETE SET NULL` |
 | `20260725000001_leave_team_multi_team_fix.sql` | Fixes `leave_team()` leaving an arbitrary team. It resolved the caller's team with a query matching one row per membership, and plpgsql's `SELECT INTO` silently keeps the first. Now takes `p_team`; the no-argument form remains for older clients but raises rather than guessing when the user is in several teams |
 | `20260725000002_usage_history_retention.sql` | Daily cron trimming `usage_history` to 30 days. The trigger above appends roughly 480 rows per account per day and nothing reads the table |
+| `20260726000001_online_access_gate.sql` | `profiles` (one row per `auth.users`, auto-created by a trigger), an `online_access` flag defaulting to `false`, and a `has_online_access()` check added to `create_team()`/`join_team()` -- sign-up is open to anyone, but joining or starting a team (the on-ramp to every paid Supabase feature) now requires the admin to grant access first, via the `admin/` dashboard. Backfills `online_access = true` for everyone already in `members` so existing users aren't locked out |

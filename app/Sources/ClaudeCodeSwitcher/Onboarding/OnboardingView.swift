@@ -86,6 +86,8 @@ struct OnboardingView: View {
             CodeEntryStep(pool: pool, email: email)
         case .needsTeamSetup:
             TeamSetupStep(pool: pool)
+        case .accessPending:
+            AccessPendingStep(pool: pool)
         case .needsTeamKey(let team):
             TeamKeyRecoveryStep(pool: pool, team: team)
         case .ready, .localOnly:
@@ -270,6 +272,40 @@ private struct TeamSetupStep: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(inviteCode.isEmpty || teamKeyInput.isEmpty || pool.isBusy)
+        }
+    }
+}
+
+private struct AccessPendingStep: View {
+    @ObservedObject var pool: PoolState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("You're signed in, but the online pool isn't enabled for this account yet. The team owner needs to grant access.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textDim)
+            Button {
+                Task { await pool.recheckAccess() }
+            } label: {
+                if pool.isBusy {
+                    ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                } else {
+                    Text("Check again").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .disabled(pool.isBusy)
+
+            Divider().padding(.vertical, 2)
+
+            Text("Don't want to wait? Use your own accounts locally instead.")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.textDim)
+            Button("Use locally, without an account") { pool.enableLocalOnly() }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.accent)
         }
     }
 }

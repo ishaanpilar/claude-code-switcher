@@ -13,6 +13,11 @@ final class PoolState: ObservableObject {
         case awaitingCode(email: String)
         /// Signed in, but this identity has no team yet. Show create/join.
         case needsTeamSetup
+        /// Signed in, no team, and the admin hasn't granted online access yet. Distinct from
+        /// needsTeamSetup because the fix is "wait for approval", not "create or join" — those
+        /// RPCs would just reject the call server-side anyway (see
+        /// 20260726000001_online_access_gate.sql).
+        case accessPending
         /// A member of `team`, but this device has never had the team key entered, as when the
         /// same person signs in on a second Mac. Distinct from `needsTeamSetup` because the fix
         /// is "paste the key", not "create or join".
@@ -98,7 +103,7 @@ final class PoolState: ObservableObject {
             guard !members.isEmpty else {
                 teamsById = [:]
                 activeTeamId = nil
-                step = .needsTeamSetup
+                step = await hasOnlineAccess(userId: userId) ? .needsTeamSetup : .accessPending
                 return
             }
             let teams = try await teamService.teams(ids: members.map(\.teamId))
@@ -120,6 +125,30 @@ final class PoolState: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Fails open (returns true) when the flag can't be read at all, e.g. a network hiccup — the
+    /// RPC-level check in create_team/join_team is the real backstop, this is only here for a
+    /// better up-front message. Only an actual `false` reading blocks onboarding.
+    private func hasOnlineAccess(userId: UUID) async -> Bool {
+        (try? await teamService.myProfile(userId: userId))?.onlineAccess ?? true
+    }
+
+    /// Re-derives the step after the admin may have granted access, for the "check again" button
+    /// on the pending-approval screen. There's no push notification for this — the flag flips from
+    /// a dashboard the app has no channel to, so the user has to ask again.
+    func recheckAccess() async {
+        guard case .signedIn(let userId, _) = auth.state else { return }
+        isBusy = true
+        defer { isBusy = false }
+        await loadMembership(userId: userId)
+    }
+
+    /// create_team/join_team both raise this exact message (20260726000001_online_access_gate.sql)
+    /// when the caller lacks online access. Matched by substring rather than a structured error
+    /// code since PostgrestError's `message` is the only field surfaced through localizedDescription.
+    private static func isAccessPendingError(_ error: Error) -> Bool {
+        error.localizedDescription.localizedCaseInsensitiveContains("online access is not enabled")
     }
 
     private func resolveActiveTeamId(among members: [Member]) -> UUID {
@@ -164,7 +193,11 @@ final class PoolState: ObservableObject {
             UserDefaults.standard.set(team.id.uuidString, forKey: Self.activeTeamKey)
             await loadMembership(userId: userId)
         } catch {
-            lastError = error.localizedDescription
+            if Self.isAccessPendingError(error) {
+                step = .accessPending
+            } else {
+                lastError = error.localizedDescription
+            }
         }
     }
 
@@ -218,7 +251,11 @@ final class PoolState: ObservableObject {
             UserDefaults.standard.set(member.teamId.uuidString, forKey: Self.activeTeamKey)
             await loadMembership(userId: userId)
         } catch {
-            lastError = error.localizedDescription
+            if Self.isAccessPendingError(error) {
+                step = .accessPending
+            } else {
+                lastError = error.localizedDescription
+            }
         }
     }
 

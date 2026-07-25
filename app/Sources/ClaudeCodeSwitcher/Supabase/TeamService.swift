@@ -21,6 +21,21 @@ struct TeamService {
             .value
     }
 
+    /// This identity's online-access flag, read directly rather than only inferred from a failed
+    /// create_team/join_team call, so onboarding can show "pending approval" up front instead of
+    /// only after a doomed attempt. A row always exists once the account-gate migration's trigger
+    /// has run, so `nil` here means "couldn't tell" (network hiccup), not "no access" — the caller
+    /// should fail open and let the RPC-level check be the real backstop.
+    func myProfile(userId: UUID) async throws -> Profile? {
+        try await client
+            .from("profiles")
+            .select()
+            .eq("user_id", value: userId)
+            .single()
+            .execute()
+            .value
+    }
+
     func teams(ids: [UUID]) async throws -> [Team] {
         guard !ids.isEmpty else { return [] }
         return try await client

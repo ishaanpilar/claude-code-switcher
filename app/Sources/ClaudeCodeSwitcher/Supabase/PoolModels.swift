@@ -17,6 +17,19 @@ struct Team: Codable, Identifiable, Equatable {
     }
 }
 
+/// This identity's admin-granted flag for the online pool (supabase/migrations/
+/// 20260726000001_online_access_gate.sql). Sign-up itself is open to anyone; this is the separate
+/// gate on create_team/join_team that the admin dashboard toggles.
+struct Profile: Codable, Equatable {
+    let userId: UUID
+    let onlineAccess: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case userId = "user_id"
+        case onlineAccess = "online_access"
+    }
+}
+
 struct Member: Codable, Identifiable, Equatable {
     let userId: UUID
     let teamId: UUID
