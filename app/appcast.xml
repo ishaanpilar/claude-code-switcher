@@ -6,6 +6,19 @@
     <description>Update feed for Claude Code Switcher.</description>
     <language>en-us</language>
     <item>
+      <title>Version 0.9.10</title>
+      <pubDate>Sat, 25 Jul 2026 07:06:00 +0000</pubDate>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>0.9.10</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <ul>
+          <li>Fixed: reserving one of your own accounts showed a warning-styled "held by (your own name)" that never cleared. It now reads "reserved by you", and the warning styling is kept for a teammate's hold.</li>
+        </ul>
+      ]]></description>
+      <enclosure url="https://github.com/ishaanpilar/claude-code-switcher/releases/download/v0.9.10/ClaudeCodeSwitcher-0.9.10.zip" type="application/octet-stream" sparkle:edSignature="A6np/OGm1l87bvwtySaCWmUYPbyo3HuhORbqXSUyglXBVJpLUz38fB9PMhmbFtycpxPoSLvYJ1DgBEKM0jP1CQ==" length="16005143" />
+    </item>
+    <item>
       <title>Version 0.9.9</title>
       <pubDate>Sat, 25 Jul 2026 06:54:41 +0000</pubDate>
       <sparkle:version>7</sparkle:version>
