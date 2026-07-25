@@ -6,6 +6,25 @@
     <description>Update feed for Claude Code Switcher.</description>
     <language>en-us</language>
     <item>
+      <title>Version 0.9.9</title>
+      <pubDate>Sat, 25 Jul 2026 06:54:41 +0000</pubDate>
+      <sparkle:version>7</sparkle:version>
+      <sparkle:shortVersionString>0.9.9</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <ul>
+          <li>Security: MCP server logins and plugin secrets are no longer uploaded to the team pool alongside a shared account token.</li>
+          <li>Fixed: a "held by" badge could stay on screen forever, and the account stayed usable while it showed.</li>
+          <li>Fixed: quitting the app left your reservation stranded for teammates.</li>
+          <li>Fixed: choosing "local only" for an account was permanent. You can now move accounts into and out of the pool freely.</li>
+          <li>Fixed: "Leave team" could leave the wrong team if you belong to more than one.</li>
+          <li>Fixed: toast messages never disappeared, and a failed switch could strand a reservation.</li>
+          <li>Added: "Rotate to next account" in the panel, and dismissable errors in Settings.</li>
+        </ul>
+      ]]></description>
+      <enclosure url="https://github.com/ishaanpilar/claude-code-switcher/releases/download/v0.9.9/ClaudeCodeSwitcher-0.9.9.zip" type="application/octet-stream" sparkle:edSignature="P/YPrtd/ADisP4JQROlBtGC6nKofd69XLRmtqT3XRbZ3PR3enUP2u2q/+I+PYbGIdT7t3uZs0PGdlIXd5l+/BQ==" length="16004945" />
+    </item>
+    <item>
       <title>Version 0.6</title>
       <pubDate>Thu, 23 Jul 2026 08:36:25 +0000</pubDate>
       <sparkle:version>6</sparkle:version>

@@ -9,7 +9,10 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 APP_DIR="$SCRIPT_DIR/.."
 BUNDLE="$APP_DIR/.build/ClaudeCodeSwitcher.app"
 VERSION="${1:-0.1}"
-TAG="v${VERSION}.0"
+# Defaults to the two-component scheme the 0.1 through 0.6 releases used (0.6 -> v0.6.0). Pass a
+# tag explicitly for a version that already carries three components, where appending .0 would
+# produce something like v0.9.9.0 and the enclosure URL would point at a tag nobody creates.
+TAG="${2:-v${VERSION}.0}"
 ZIP="$APP_DIR/.build/ClaudeCodeSwitcher-$VERSION.zip"
 
 [ -d "$BUNDLE" ] || { echo "No .app at $BUNDLE. Run build_app_bundle.sh release first."; exit 1; }
