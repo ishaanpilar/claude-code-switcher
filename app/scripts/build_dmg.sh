@@ -1,10 +1,10 @@
 #!/bin/sh
 # Packages the built .app into a distributable .dmg (drag-to-Applications installer). Run
-# core/build_binary.sh and build_app_bundle.sh (with the config you want) first — this only wraps
+# core/build_binary.sh and build_app_bundle.sh (with the config you want) first. This only wraps
 # the already-built bundle.
 #
 # NOTE: the .app is ad-hoc signed, not notarized. This DMG opens fine on THIS Mac, but on another
-# Mac macOS Gatekeeper will quarantine it — the recipient has to right-click → Open the first time
+# Mac macOS Gatekeeper will quarantine it, so the recipient must right-click then Open the first time
 # (or run `xattr -dr com.apple.quarantine` on it). A clean "download and open" needs Developer ID
 # signing + notarization, which requires an Apple Developer account.
 set -eu
@@ -15,7 +15,7 @@ BUNDLE="$APP_DIR/.build/ClaudeCodeSwitcher.app"
 VERSION="${1:-0.1}"
 DMG="$APP_DIR/.build/ClaudeCodeSwitcher-$VERSION.dmg"
 
-[ -d "$BUNDLE" ] || { echo "No .app at $BUNDLE — run build_app_bundle.sh first."; exit 1; }
+[ -d "$BUNDLE" ] || { echo "No .app at $BUNDLE. Run build_app_bundle.sh first."; exit 1; }
 
 # Stage the .app plus an /Applications symlink so the DMG shows the familiar drag-to-install layout.
 STAGE=$(mktemp -d)/dmg

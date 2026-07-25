@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Fixed visual identity (BUILD_PLAN.md section 7): one deliberately-designed appearance, not a
-/// customization surface. The only variation is automatic light/dark, matched to the system —
-/// there is no user-facing theme picker anywhere in this app.
+/// customization surface. The only variation is automatic light/dark matched to the system.
+/// There is no user-facing theme picker anywhere in this app.
 enum Theme {
     static let accent = Color(light: "#5B5BD6", dark: "#8B8BF0")
     static let surface = Color(light: "#FFFFFF", dark: "#1C1C22")

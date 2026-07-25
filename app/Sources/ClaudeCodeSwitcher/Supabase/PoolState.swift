@@ -2,26 +2,25 @@ import Combine
 import CryptoKit
 import Foundation
 
-/// Drives onboarding end to end: auth → team membership → local team-key presence → ready.
-/// Kept separate from `AppState` (local ccswitch-core state, Phase 1) deliberately — this file
-/// is everything that's new in Phase 2, and `AppState` didn't need to change shape to make room
-/// for it, exactly as planned in BUILD_PLAN.md's phase breakdown.
+/// Drives onboarding end to end: auth, then team membership, then local team-key presence, then
+/// ready. Kept separate from `AppState`, which owns local ccswitch-core state, so that neither has
+/// to know the other's shape.
 @MainActor
 final class PoolState: ObservableObject {
     enum Step: Equatable {
         case checking
         case signedOut
         case awaitingCode(email: String)
-        /// Signed in, but this identity has no team yet — show create/join.
+        /// Signed in, but this identity has no team yet. Show create/join.
         case needsTeamSetup
-        /// A member of `team`, but this specific device has never had the team key entered —
-        /// e.g. the same person signing in on a second Mac. Distinct from `needsTeamSetup`
-        /// because the fix here is "paste the key," not "create or join."
+        /// A member of `team`, but this device has never had the team key entered, as when the
+        /// same person signs in on a second Mac. Distinct from `needsTeamSetup` because the fix
+        /// is "paste the key", not "create or join".
         case needsTeamKey(team: Team)
         case ready(team: Team, member: Member)
-        /// Offline / local-only: the panel runs against just this Mac's own captured accounts, no
-        /// sign-in, no cloud, no sharing. A deliberate mode for someone who juggles several of
-        /// their own accounts and doesn't want a pool at all.
+        /// Local-only: the panel runs against this Mac's own captured accounts, with no sign-in,
+        /// cloud, or sharing. For someone juggling several of their own accounts who doesn't want
+        /// a pool at all.
         case localOnly
     }
 
@@ -67,7 +66,7 @@ final class PoolState: ObservableObject {
     }
 
     private func reconcile() async {
-        // Local-only wins over auth state entirely — someone who chose offline mode shouldn't be
+        // Local-only wins over auth state entirely: someone who chose offline mode shouldn't be
         // dragged back to a sign-in screen just because there's no Supabase session.
         if isLocalOnly {
             step = .localOnly
@@ -202,13 +201,13 @@ final class PoolState: ObservableObject {
             : .needsTeamKey(team: team)
     }
 
-    /// A teammate needs both the invite code (grants Supabase membership) and the team key
-    /// (decrypts shared tokens) — two different secrets with two different trust boundaries,
-    /// handed over together out-of-band during onboarding.
+    /// A teammate needs both the invite code, which grants Supabase membership, and the team key,
+    /// which decrypts shared tokens: two secrets with two different trust boundaries, handed over
+    /// together during onboarding.
     func joinTeam(code: String, teamKeyString: String) async {
         guard case .signedIn(let userId, _) = auth.state else { return }
         guard let key = TeamKeyStore.import(teamKeyString) else {
-            lastError = "That team key doesn't look right — check it was copied in full."
+            lastError = "That team key doesn't look right. Check it was copied in full."
             return
         }
         isBusy = true
@@ -226,7 +225,7 @@ final class PoolState: ObservableObject {
     /// The `.needsTeamKey` recovery path: already a member, just missing the key on this device.
     func enterTeamKey(_ teamKeyString: String, team: Team) async {
         guard let key = TeamKeyStore.import(teamKeyString) else {
-            lastError = "That team key doesn't look right — check it was copied in full."
+            lastError = "That team key doesn't look right. Check it was copied in full."
             return
         }
         guard case .signedIn(let userId, _) = auth.state else { return }
@@ -240,21 +239,21 @@ final class PoolState: ObservableObject {
         }
     }
 
-    /// The exported team key string for display right after `createTeam` succeeds — read back
-    /// from the Keychain rather than threaded through as a return value, so there is exactly one
-    /// place a raw key ever gets read out (here) instead of two call paths carrying it around.
+    /// The exported team key string, for display right after `createTeam` succeeds. Read back from
+    /// the Keychain rather than threaded through as a return value, so there is exactly one place
+    /// a raw key is ever read out instead of two call paths carrying it around.
     func currentTeamKeyForSharing(team: Team) -> String? {
         guard let key = TeamKeyStore.load(teamId: team.id) else { return nil }
         return TeamKeyStore.export(key)
     }
 
-    /// Owner-only (enforced server-side by `create_team_invite`'s `security definer` check, not
-    /// just here) — generates a fresh single-use, 7-day code. This is the only place in the app
-    /// that ever calls it: without this, a team could never grow past whoever created it, since
-    /// `joinTeam` requires a code nothing else produces.
+    /// Generates a fresh single-use, 7-day code. Owner-only, enforced server-side by
+    /// `create_team_invite`'s security-definer check rather than just here. The only caller in the
+    /// app: without it a team could never grow past its creator, since `joinTeam` needs a code
+    /// nothing else produces.
     func createInvite() async -> String? {
         guard case .ready(let team, let member) = step, member.role == "owner" else { return nil }
-        lastError = nil  // clear any stale error so a leftover from an unrelated action can't be mistaken for this call's result
+        lastError = nil  // so a stale error can't be mistaken for this call's result
         do {
             return try await teamService.createInvite(teamId: team.id)
         } catch {
@@ -263,16 +262,25 @@ final class PoolState: ObservableObject {
         }
     }
 
-    /// Leave the current team (Settings → Team). The RPC blocks the team owner from leaving while
-    /// others remain — that error is surfaced here rather than silently swallowed, since the user
-    /// needs to know why nothing happened. On success onboarding re-derives (membership comes back
-    /// nil → back to `needsTeamSetup`).
+    /// Leave the *active* team (Settings → Team). The RPC blocks a team's owner from leaving while
+    /// others remain; that error surfaces here rather than being swallowed, since the user needs
+    /// to know why nothing happened. On success, onboarding re-derives from the remaining
+    /// memberships. Passes the team explicitly so that, for someone in several teams, this leaves
+    /// the one Settings is actually showing.
     func leaveTeam() async {
         guard case .signedIn(let userId, _) = auth.state else { return }
+        guard let teamId = activeTeamId else {
+            lastError = "No active team to leave."
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         do {
-            try await teamService.leaveTeam()
+            try await teamService.leaveTeam(teamId: teamId)
+            // The team just left must not stay the remembered active one, or the next launch
+            // resolves back to a membership that no longer exists.
+            UserDefaults.standard.removeObject(forKey: Self.activeTeamKey)
+            activeTeamId = nil
             await loadMembership(userId: userId)
         } catch {
             lastError = error.localizedDescription

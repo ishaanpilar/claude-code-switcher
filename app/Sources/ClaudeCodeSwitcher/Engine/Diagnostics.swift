@@ -2,10 +2,10 @@ import Foundation
 import AppKit
 
 /// Lightweight file logging for the About page's "Reveal logs" / bug-report flow. Appends
-/// timestamped lines to `~/Library/Logs/Claude Code Switcher/ccswitch.log` — the standard place
+/// timestamped lines to `~/Library/Logs/Claude Code Switcher/ccswitch.log`, the standard place
 /// a Mac user (or you, debugging a friend's install) would look. Deliberately records only app
-/// events (switches, errors, lifecycle), never tokens or prompt contents — the same rule the
-/// rest of the app follows.
+/// events (switches, errors, lifecycle), never tokens or prompt contents, matching the rest of
+/// the app.
 enum Diagnostics {
     static let logDirectory: URL = {
         let base = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
@@ -23,7 +23,7 @@ enum Diagnostics {
     }()
 
     /// Fire-and-forget; serialized on its own queue so concurrent callers can't interleave a
-    /// half-written line. Never throws — logging must never be able to break a real action.
+    /// half-written line. Never throws, since logging must not be able to break a real action.
     static func log(_ message: String) {
         let line = "\(formatter.string(from: Date()))  \(message)\n"
         queue.async {

@@ -1,16 +1,14 @@
 import Foundation
 
-/// Turn-count attribution (BUILD_PLAN.md section 8): "who is consuming how much" is answered by
-/// counting prompts, not by tracking wall-clock claim time. A Claude Code `UserPromptSubmit` hook
-/// POSTs one row per prompt to the `log_turn` Supabase RPC; this file is everything on the app
-/// side of that — installing/removing the hook (with consent, never silently), and keeping the
-/// small state file the hook script reads up to date.
+/// Turn-count attribution: "who is consuming how much" is answered by counting prompts, not by
+/// tracking wall-clock claim time. A Claude Code `UserPromptSubmit` hook POSTs one row per prompt
+/// to the `log_turn` RPC. This file is the app side of that: installing and removing the hook with
+/// consent, and keeping the small state file the script reads up to date.
 ///
-/// Deliberately a standalone shell script rather than routed through `ccswitch-core`: it needs to
-/// run fast on every single prompt submission, and it isn't Claude Code *credential* I/O (the one
-/// thing invariant 1 reserves for the Python core) — it's this app's own Supabase session talking
-/// to this app's own backend, so keeping it in a plain `curl` script avoids a `uv run` cold start
-/// on every prompt.
+/// A standalone shell script rather than a route through `ccswitch-core`, because it runs on every
+/// prompt submission and isn't Claude Code credential I/O (the one thing the Python core is
+/// reserved for). It's this app's own Supabase session talking to its own backend, so a plain
+/// `curl` script avoids a `uv run` cold start per prompt.
 enum AttributionHookService {
     private static var claudeDir: URL {
         let configPath = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"] ?? (NSHomeDirectory() + "/.claude")
@@ -20,19 +18,19 @@ enum AttributionHookService {
     private static var scriptURL: URL { hooksDir.appendingPathComponent("ccswitch-log-turn.sh") }
     private static var settingsURL: URL { claudeDir.appendingPathComponent("settings.json") }
 
-    /// `~/.ccswitch/session.env` — small, `chmod 600`, shell-sourceable key=value pairs. Not
-    /// JSON: the hook script has to parse it with zero dependencies beyond `/bin/sh` (no `jq`
-    /// guaranteed on a fresh Mac), and `. session.env` in a POSIX shell does that for free.
+    /// `~/.ccswitch/session.env`: small, `chmod 600`, shell-sourceable key=value pairs. Not JSON,
+    /// because the hook script must parse it with no dependency beyond `/bin/sh` (a fresh Mac has
+    /// no guaranteed `jq`), and `. session.env` in a POSIX shell does that for free.
     private static var sessionStateURL: URL {
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".ccswitch/session.env")
     }
 
     private static let scriptContents = """
     #!/bin/sh
-    # Installed by Claude Code Switcher (BUILD_PLAN.md section 8) — fires on every
-    # UserPromptSubmit. Reads the current Supabase session + active pool account from
-    # session.env (kept fresh by the app itself), then logs one turn. Best-effort: any
-    # missing state or network failure exits 0 silently rather than interrupting the prompt.
+    # Installed by Claude Code Switcher. Fires on every UserPromptSubmit: reads the current
+    # Supabase session and active pool account from session.env, which the app keeps fresh,
+    # then logs one turn. Best-effort, so missing state or a network failure exits 0
+    # silently rather than interrupting the prompt.
     set -eu
     STATE="$HOME/.ccswitch/session.env"
     [ -f "$STATE" ] || exit 0
@@ -58,8 +56,8 @@ enum AttributionHookService {
         return hookEntryPresent(in: readSettings())
     }
 
-    /// Writes the script and merges the hook entry into `settings.json` — never overwrites
-    /// unrelated hooks the user (or another tool) already configured there.
+    /// Writes the script and merges the hook entry into `settings.json`, never overwriting
+    /// unrelated hooks the user or another tool already configured there.
     static func install() throws {
         try FileManager.default.createDirectory(at: hooksDir, withIntermediateDirectories: true)
         try scriptContents.write(to: scriptURL, atomically: true, encoding: .utf8)
@@ -79,8 +77,8 @@ enum AttributionHookService {
         try writeSettings(settings)
     }
 
-    /// Removes only our hook entry (matched on command path) and the script file — leaves any
-    /// other hooks in `settings.json` untouched.
+    /// Removes only our hook entry, matched on command path, plus the script file. Any other hooks
+    /// in `settings.json` are left untouched.
     static func uninstall() throws {
         var settings = readSettings()
         if var hooks = settings["hooks"] as? [String: Any],
@@ -122,9 +120,8 @@ enum AttributionHookService {
 
     // MARK: - Session state the hook script reads
 
-    /// Called whenever any of the four pieces of state the hook needs might have changed (auth
-    /// token refresh, team switch, active-account switch) — `AppState` treats this as cheap and
-    /// idempotent rather than trying to diff first.
+    /// Called whenever any state the hook needs might have changed: a token refresh, a team
+    /// switch, an active-account switch. Cheap and idempotent, so callers don't diff first.
     static func writeSessionState(accessToken: String, teamId: UUID, activeAccountId: UUID?) {
         let lines = [
             "CCSWITCH_SUPABASE_URL=\(SupabaseConfig.projectURL.absoluteString)",

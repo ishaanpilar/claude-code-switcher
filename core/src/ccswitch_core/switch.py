@@ -1,18 +1,17 @@
-"""Capture and activate accounts — the credential-critical execution path.
+"""Capture and activate accounts: the credential-critical execution path.
 
 Extracted from claude-swap's switcher.py ``perform_switch`` (MIT), simplified
-to operate on a single ``account_uuid`` handed in by the caller (Supabase/
-Swift owns slot semantics now — see BUILD_PLAN.md section 2) instead of a
-local slot table.
+to operate on a single ``account_uuid`` handed in by the caller, since Supabase
+and Swift own slot semantics now, instead of a local slot table.
 
-Design choice worth calling out: we only ever merge the small ``oauthAccount``
-fragment into ``~/.claude.json``, never snapshot/restore the whole file. The
+One design choice worth calling out: we only merge the small ``oauthAccount``
+fragment into ``~/.claude.json``, never snapshot or restore the whole file. The
 rest of that file (project trust, MCP server config, local settings) is
-machine-local and must never travel with an account switch — the original
-``ccswitch.sh`` got this right (``jq '.oauthAccount = $oauth'``) and
-claude-swap's fuller per-slot config snapshot is solving a different problem
-(full local-state parity across *slots on one machine*) that doesn't apply
-here, where the pool spans machines.
+machine-local and must not travel with an account switch. The original
+``ccswitch.sh`` got this right with ``jq '.oauthAccount = $oauth'``.
+claude-swap's fuller per-slot config snapshot solves a different problem, full
+local-state parity across slots on one machine, which doesn't apply where the
+pool spans machines.
 """
 
 from __future__ import annotations
@@ -98,8 +97,8 @@ def _write_claude_config(data: dict) -> None:
 
 def get_active_identity() -> dict | None:
     """The currently-logged-in account's identity from ``~/.claude.json``'s
-    ``oauthAccount`` — a cheap local read, no network, no lock (read-only).
-    None when nobody is logged in or the field is missing/incomplete."""
+    ``oauthAccount``: a cheap local read, no network, no lock. None when nobody
+    is logged in or the field is missing or incomplete."""
     cfg = _read_claude_config()
     oauth_account = cfg.get("oauthAccount")
     if not isinstance(oauth_account, dict):
@@ -125,12 +124,11 @@ def snapshot() -> dict:
 
 
 def capture_current() -> dict:
-    """Back up the *currently logged-in* account so it can be switched back
-    to later — the local half of both ``cswap add``'s manual flow and the
-    auto-capture-on-new-login feature (BUILD_PLAN.md section 6). Idempotent:
-    capturing an already-known account just refreshes its stored token,
-    which is correct — a fresh login is always at least as current as
-    whatever was stored."""
+    """Back up the currently logged-in account so it can be switched back to
+    later: the local half of both the manual add flow and auto-capture on new
+    login. Idempotent, since capturing an already-known account just refreshes
+    its stored token, which is correct: a fresh login is always at least as
+    current as whatever was stored."""
     store = CredentialStore()
     active_creds = store.read_active_credentials()
     if not active_creds:
@@ -166,17 +164,16 @@ def activate(
       local backup for ``account_uuid``. Raises AccountNotFoundError if this
       machine has never captured it.
     - ``credentials=<plaintext token>`` (the ``import-activate`` command): a
-      token handed in fresh — typically decrypted by Swift from a teammate's
+      token handed in fresh, typically decrypted by Swift from a teammate's
       shared Supabase entry. Also persisted as this machine's own local
       backup afterward, so a subsequent bare ``switch`` back to it works
       offline. ``email``/``organization_uuid`` (from the Supabase row, since
       an import may be the first time this machine has ever seen the
       account) seed the local index when supplied.
 
-    Holds both of Claude Code's own lockfiles for the duration — see
-    claude_locks.py's module docstring for why this matters: without it, a
-    switch racing a live Claude Code token refresh can be silently
-    overwritten.
+    Holds both of Claude Code's own lockfiles for the duration. See
+    claude_locks.py's module docstring for why: without it, a switch racing a
+    live Claude Code token refresh can be silently overwritten.
     """
     store = CredentialStore()
 
@@ -184,7 +181,7 @@ def activate(
         credentials = store.read_account_credentials(account_uuid)
         if not credentials:
             raise AccountNotFoundError(
-                f"No local credentials for account {account_uuid} — "
+                f"No local credentials for account {account_uuid}: "
                 "import it first (import-activate) or add-current while logged into it"
             )
 
@@ -225,8 +222,8 @@ def activate(
 
 def remove_local(account_uuid: str) -> bool:
     """Delete this machine's local backup for an account. Does not touch
-    Supabase — the caller (Swift) removes the pool row separately, and must
-    check no claim/active-use conflict exists first."""
+    Supabase: the Swift caller removes the pool row separately, and must check
+    no claim or active-use conflict exists first."""
     store = CredentialStore()
     store.delete_account_credentials(account_uuid)
     frag = _oauth_fragment_path(account_uuid)

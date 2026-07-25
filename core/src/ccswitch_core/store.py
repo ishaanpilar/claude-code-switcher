@@ -1,12 +1,13 @@
 """Local index of accounts this machine has credential backups for.
 
 Deliberately thin: it holds only what's needed to answer "what do I have
-locally" (identity, email, when captured) — it is NOT the pool. Pool
-membership, aliases, share-mode, and claims live in Supabase and are owned by
-the Swift side (see BUILD_PLAN.md section 4); this file only has to survive
-this one Mac being offline. Keyed by ``anthropic_account_uuid`` — the same
-identity ``oauth.fetch_oauth_profile`` resolves — never by email, so a
-display-email collision can never merge two distinct accounts.
+locally" (identity, email, when captured). It is not the pool. Pool membership,
+share mode and claims live in Supabase and are owned by the Swift side; this
+file only has to survive this Mac being offline.
+
+Keyed by ``anthropic_account_uuid`` (the same identity Claude Code records in
+``~/.claude.json``'s ``oauthAccount``), never by email, so a display-email
+collision can't merge two distinct accounts.
 """
 
 from __future__ import annotations
@@ -71,10 +72,6 @@ def list_accounts() -> list[dict]:
     return rows
 
 
-def get_account(account_uuid: str) -> dict | None:
-    return load()["accounts"].get(account_uuid)
-
-
 def upsert_account(account_uuid: str, *, email: str, organization_uuid: str | None) -> None:
     data = load()
     existing = data["accounts"].get(account_uuid, {})
@@ -94,13 +91,3 @@ def remove_account(account_uuid: str) -> bool:
     del data["accounts"][account_uuid]
     _save(data)
     return True
-
-
-def find_by_email(email: str) -> str | None:
-    """account_uuid for a locally-known email, or None. Used only as a
-    pre-identity-resolution hint (e.g. before a network call can confirm the
-    uuid); callers must not treat this as authoritative identity."""
-    for uuid, info in load()["accounts"].items():
-        if info.get("email") == email:
-            return uuid
-    return None

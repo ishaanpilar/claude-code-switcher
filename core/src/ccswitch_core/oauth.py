@@ -1,10 +1,9 @@
-"""OAuth token refresh, identity resolution, and usage-API access.
+"""OAuth token refresh and usage-API access.
 
-Trimmed from claude-swap's oauth.py (MIT): kept refresh, identity resolution
-(needed for account_uuid-based dedup — see BUILD_PLAN.md section 6) and the
-usage fetch/normalize pair. Dropped: the pace/relevant-windows/formatting
-helpers that only the CLI's own text rendering needed — the Swift side owns
-all display formatting now.
+Trimmed from claude-swap's oauth.py (MIT): kept refresh plus the usage
+fetch/normalize pair. Dropped the pace, relevant-windows and formatting helpers
+that only the CLI's own text rendering needed, since the Swift side owns all
+display formatting now.
 """
 
 from __future__ import annotations
@@ -16,11 +15,12 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from ccswitch_core import __version__
+
 OAUTH_BETA_HEADER = "oauth-2025-04-20"
-OAUTH_EXPIRY_BUFFER_MS = 5 * 60 * 1000
 OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-USER_AGENT = "ccswitch-core/0.1"
+USER_AGENT = f"ccswitch-core/{__version__}"
 
 _logger = logging.getLogger("ccswitch-core")
 
@@ -34,18 +34,11 @@ def extract_oauth_data(credentials: str) -> dict | None:
     return oauth if isinstance(oauth, dict) else None
 
 
-def is_oauth_token_expired(expires_at: object, buffer_ms: int = OAUTH_EXPIRY_BUFFER_MS) -> bool:
-    if not isinstance(expires_at, (int, float)):
-        return False
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    return now_ms + buffer_ms >= int(expires_at)
-
-
 @dataclass(frozen=True)
 class RefreshOutcome:
     """``error`` classifies failure so callers can tell a dead refresh-token
-    lineage (``invalid_grant`` — permanent, quarantine) from a network blip
-    (``transient`` — retry later)."""
+    lineage (``invalid_grant``: permanent, quarantine) from a network blip
+    (``transient``: retry later)."""
 
     credentials: str | None
     error: str | None
@@ -116,58 +109,6 @@ def _parse_token_account(resp_data: dict) -> dict | None:
     }
 
 
-def fetch_oauth_profile(access_token: str) -> dict | None:
-    """Resolve an access token to its account identity — the source of
-    ``anthropic_account_uuid``, the identity our dedup logic keys on (never
-    email alone: two accounts can share a display email during a domain
-    migration, uuid never collides). None on any failure; callers treat that
-    as "unresolvable", not an error."""
-    url = "https://api.anthropic.com/api/oauth/profile"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT,
-    }
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        _logger.debug("OAuth profile fetch failed: %r", e)
-        return None
-    account = data.get("account") if isinstance(data, dict) else None
-    if not isinstance(account, dict):
-        return None
-    uuid = account.get("uuid")
-    if not isinstance(uuid, str) or not uuid.strip():
-        return None
-    email = account.get("email")
-    organization = data.get("organization")
-    org_uuid = organization.get("uuid") if isinstance(organization, dict) else None
-    return {
-        "uuid": uuid.strip(),
-        "email": email if isinstance(email, str) else None,
-        "organizationUuid": org_uuid if isinstance(org_uuid, str) else None,
-    }
-
-
-def format_reset(resets_at: str) -> tuple[str, str]:
-    reset_utc = datetime.fromisoformat(resets_at)
-    now = datetime.now(timezone.utc)
-    remaining = reset_utc - now
-    total_seconds = max(0, int(remaining.total_seconds()))
-    days, remainder = divmod(total_seconds, 86400)
-    hours, remainder = divmod(remainder, 3600)
-    minutes = remainder // 60
-    if days > 0:
-        countdown = f"{days}d {hours}h"
-    elif hours > 0:
-        countdown = f"{hours}h {minutes}m"
-    else:
-        countdown = f"{minutes}m"
-    return countdown, reset_utc.isoformat()
-
-
 def request_usage_data(access_token: str) -> dict:
     url = "https://api.anthropic.com/api/oauth/usage"
     headers = {
@@ -181,10 +122,9 @@ def request_usage_data(access_token: str) -> dict:
 
 
 def build_usage_result(data: dict) -> dict:
-    """Normalize the raw usage API payload into the flat shape Swift consumes
-    directly (this becomes a row in Supabase's ``usage_current`` — see
-    BUILD_PLAN.md section 4). Returns {} (never None) when nothing parsed, so
-    callers can always safely serialize the result."""
+    """Normalize the raw usage API payload into the flat shape Swift consumes,
+    which becomes a row in Supabase's ``usage_current``. Returns {}, never None,
+    when nothing parsed, so callers can always serialize the result."""
     result: dict = {}
 
     h5 = data.get("five_hour")

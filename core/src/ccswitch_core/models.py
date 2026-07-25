@@ -1,9 +1,8 @@
 """Small shared types.
 
-``Platform`` is deliberately kept even though this build only implements the
-MACOS branch: every call site that will need a Windows/Linux implementation
-later (paths.py, credentials.py) already switches on it, so expansion is
-additive — see BUILD_PLAN.md Phase 5.
+``Platform`` is kept even though this build only implements the MACOS branch:
+every call site that will need a Windows or Linux implementation later already
+switches on it, so expansion stays additive.
 """
 
 from __future__ import annotations

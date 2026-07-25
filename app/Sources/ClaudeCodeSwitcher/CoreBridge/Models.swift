@@ -2,7 +2,7 @@ import Foundation
 
 /// Mirrors the JSON shapes `ccswitch-core` prints on stdout (core/src/ccswitch_core/__main__.py).
 /// Kept in one file so the wire contract between Swift and Python has a single source of truth
-/// on this side — if a core command's output shape changes, this is the only file that follows.
+/// on this side, so if a core command's output shape changes this is the only file that follows.
 
 struct AccountIdentity: Codable, Equatable, Identifiable {
     let accountUuid: String
@@ -59,8 +59,7 @@ struct UsageWindow: Codable, Equatable {
     /// nil when the API didn't send a reset time for this window.
     var resetsInLabel: String? { Self.countdownLabel(to: resetsAt) }
 
-    /// Shared by both usage windows and `ScopedUsage` — same wire format, same countdown shape
-    /// as the (currently unused) Python-side `oauth.format_reset`, kept in sync intentionally.
+    /// Shared by both usage windows and `ScopedUsage`, which use the same wire format.
     static func countdownLabel(to resetsAt: String?) -> String? {
         guard let resetsAt, let date = parseISO8601(resetsAt) else { return nil }
         let seconds = Int(date.timeIntervalSinceNow)
@@ -118,7 +117,7 @@ struct Usage: Codable, Equatable {
 }
 
 /// The optional identity hint a token-refresh response may carry (`oauth._parse_token_account`
-/// on the Python side) — note the keys are camelCase already on the wire (`organizationUuid`),
+/// on the Python side). The keys are already camelCase on the wire (`organizationUuid`),
 /// unlike most of this file's snake_case core output, because that struct is built by hand from
 /// the OAuth token endpoint's own response shape rather than going through the core's usual
 /// output pipeline.
@@ -140,7 +139,7 @@ struct RefreshedToken: Codable {
 
 /// The envelope every ccswitch-core command prints: `{"ok": true, ...}` or
 /// `{"ok": false, "error": {...}}`. Decoded generically, then the caller decodes
-/// the specific payload out of `raw` once `ok` is confirmed true — see CoreBridge.run().
+/// the specific payload once `ok` is confirmed true. See CoreBridge.run().
 struct CoreEnvelope: Codable {
     let ok: Bool
     let error: CoreErrorPayload?

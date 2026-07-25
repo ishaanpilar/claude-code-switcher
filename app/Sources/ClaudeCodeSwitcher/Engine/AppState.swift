@@ -3,11 +3,11 @@ import CryptoKit
 import Foundation
 import SwiftUI
 
-/// One row in the panel's account list — a merge of what ccswitch-core knows locally
+/// One row in the panel's account list: a merge of what ccswitch-core knows locally
 /// (`KnownAccount`) and what the pool knows (`PoolAccount`/`ClaimRow`), joined on
-/// `anthropicAccountUuid`. Neither source alone is enough to render the list correctly: a
-/// teammate's shared account the pool knows about but this Mac has never activated has no local
-/// row at all, and a personal account never pushed to the pool has no `PoolAccount`.
+/// `anthropicAccountUuid`. Neither source alone is enough. A teammate's shared account this Mac
+/// has never activated has no local row, and a personal account never pushed to the pool has no
+/// `PoolAccount`.
 struct DisplayAccount: Identifiable {
     let accountUuid: String
     let email: String
@@ -22,15 +22,12 @@ struct DisplayAccount: Identifiable {
     var isActivatableHere: Bool { isLocallyKnown || poolAccount?.shareMode == .shared }
 }
 
-/// Central observable state for the panel. Phase 1 (local snapshot, add/switch/remove,
-/// auto-capture) plus Phase 2 pool sync (BUILD_PLAN.md): pushing/pulling `accounts` /
-/// `usage_current` / `claims`, claim-aware switching, and the claimed-by badges. The
-/// poll-leader election from Phase 3 is NOT here yet — see PoolSyncService's header comment for
-/// exactly what that means for usage-push volume in the meantime.
+/// Central observable state for the panel: the local snapshot (add/switch/remove, auto-capture)
+/// and pool sync (`accounts` / `usage_current` / `claims`, claim-aware switching, claimed-by
+/// badges). Poll-leader election lives in `PollLeaderController`, wired up in `configurePool`.
 ///
-/// Threading rule (BUILD_PLAN.md section 7): all `@Published` mutation happens on the main
-/// actor. Every method below is either already `@MainActor` (this whole class is) or hops back
-/// via `await` before touching state.
+/// Threading rule: all `@Published` mutation happens on the main actor. Every method here is
+/// either already `@MainActor` (this whole class is) or hops back via `await` first.
 @MainActor
 final class AppState: ObservableObject {
     @Published private(set) var activeAccount: AccountIdentity?
@@ -39,7 +36,21 @@ final class AppState: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var isSwitching = false
     @Published var lastError: String?
-    @Published var toast: String?
+    /// Transient status line under the panel. Clears itself after `toastDuration` so a message
+    /// from ten minutes ago can't sit there looking like the result of what you just did.
+    @Published var toast: String? {
+        didSet {
+            guard toast != nil else { return }
+            toastClearTask?.cancel()
+            toastClearTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(Self.toastDuration * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self?.toast = nil
+            }
+        }
+    }
+    private static let toastDuration: TimeInterval = 6
+    private var toastClearTask: Task<Void, Never>?
 
     // Pool state (empty/inert until configurePool(team:member:) runs).
     @Published private(set) var poolAccountsByUuid: [String: PoolAccount] = [:]
@@ -47,14 +58,12 @@ final class AppState: ObservableObject {
     @Published private(set) var membersById: [UUID: Member] = [:]
     @Published private(set) var autoSwitchSettings = AutoSwitchSettings.loadFromDefaults()
     @Published private(set) var isPollLeader = false
-    /// Whether the `UserPromptSubmit` turn-log hook (BUILD_PLAN.md section 8) is installed —
-    /// opt-in, never assumed; reflects the actual on-disk state at launch rather than a
-    /// separately-tracked preference that could drift from it.
+    /// Whether the `UserPromptSubmit` turn-log hook is installed. Opt-in, never assumed; reads
+    /// actual on-disk state rather than a preference that could drift from it.
     @Published private(set) var attributionEnabled = AttributionHookService.isInstalled()
-    /// Whether this device reserves an account while it's in use — a "held by X" lease that blocks
-    /// teammates from switching to it and steers auto-switch away. **Off by default**: two people
-    /// can happily share one account at the same time, so nothing is claimed, blocked, or badged
-    /// unless the user opts in (Settings → Team). Purely a local preference.
+    /// Whether this device reserves an account while in use: a "held by X" lease that blocks
+    /// teammates from switching to it and steers auto-switch away. Off by default, since two
+    /// people can share one account at the same time. Local preference (Settings → Team).
     @Published private(set) var reserveAccountsWhileInUse = UserDefaults.standard.bool(forKey: "com.claudecodeswitcher.reserveAccounts")
 
     private let bridge: CoreBridge
@@ -64,8 +73,8 @@ final class AppState: ObservableObject {
         onCaptured: { [weak self] account in self?.handleCaptured(account) },
         onKnownAccountActive: { [weak self] account in self?.handleKnownAccountActive(account) }
     )
-    // `onEvent` wired here rather than in `configurePool()` so quick-switch buttons work (and
-    // report their outcome as a toast) even for a solo user who never sets up a pool at all.
+    // `onEvent` wired here rather than in `configurePool()` so quick-switch buttons work, and
+    // report their outcome, even for a solo user who never sets up a pool.
     private lazy var autoSwitchEngine: AutoSwitchEngine = {
         let engine = AutoSwitchEngine(bridge: bridge, state: self)
         engine.onEvent = { [weak self] event in self?.handleAutoSwitchEvent(event) }
@@ -73,6 +82,7 @@ final class AppState: ObservableObject {
     }()
     private lazy var pollLeaderController = PollLeaderController(bridge: bridge)
     private var pollLeaderStatusTimer: Timer?
+    private var claimExpiryTimer: Timer?
 
     private var currentTeam: Team?
     private var currentMember: Member?
@@ -83,12 +93,17 @@ final class AppState: ObservableObject {
     private var lastAccessToken: String?
     private var authCancellable: AnyCancellable?
 
+    /// The one live instance, so `AppDelegate` can hand back a reservation on quit. `@StateObject`
+    /// guarantees exactly one `AppState` per app lifetime (see `init`), so this refers to *the*
+    /// app state rather than acting as a general service locator.
+    private(set) static weak var shared: AppState?
+
     init(bridge: CoreBridge = .resolveDefault()) {
         self.bridge = bridge
-        // Started here, not from a view's `.task`/`.onAppear`: `@StateObject` guarantees this
-        // instance is created exactly once for the app's lifetime, which is the exactly-once
-        // semantics the file watcher needs — a view-attached start could re-fire every time the
-        // menu bar dropdown opens.
+        Self.shared = self
+        // Started here, not from a view's `.task`/`.onAppear`: `@StateObject` creates this
+        // instance exactly once per app lifetime, which is what the file watcher needs. A
+        // view-attached start would re-fire every time the menu bar dropdown opens.
         start()
     }
 
@@ -109,13 +124,40 @@ final class AppState: ObservableObject {
         autoSwitchEngine.stop()
         pollLeaderController.stop()
         pollLeaderStatusTimer?.invalidate()
+        claimExpiryTimer?.invalidate()
         authCancellable?.cancel()
+        toastClearTask?.cancel()
+    }
+
+    /// Whether quitting right now would strand a reservation on the server.
+    var holdsReleasableClaim: Bool { heldClaimAccountId != nil }
+
+    /// Hands back the reservation this device holds, on the way out. Nothing used to do this:
+    /// `stop()` had no callers at all, so quitting left `held_by` set on the row with no heartbeat
+    /// behind it. Teammates then saw "held by you" on an account nobody was using until the
+    /// server-side reaper got to it, and if pg_cron isn't running on the project, indefinitely.
+    ///
+    /// Bounded by `timeout` because this runs inside `applicationShouldTerminate`: a slow or dead
+    /// network must delay quitting by a beat, never block it. Missing the release is survivable
+    /// now that a lapsed lease is ignored client-side anyway (see `ClaimRow.isLive`); this just
+    /// frees the account immediately rather than five minutes later.
+    func releaseHeldClaimBeforeQuit(timeout: TimeInterval = 2) async {
+        guard let accountId = heldClaimAccountId else { return }
+        heldClaimAccountId = nil
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [poolSync] in try? await poolSync.releaseClaim(accountId: accountId) }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000)) }
+            await group.next()
+            group.cancelAll()
+        }
     }
 
     // MARK: - Local (ccswitch-core) state
 
-    /// One in-flight refresh at a time (BUILD_PLAN.md invariant/section 7) — a second call while
-    /// one is already running is a silent no-op rather than a queued duplicate.
+    /// One in-flight refresh at a time. A second call while one is running is a silent no-op,
+    /// not a queued duplicate.
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
@@ -127,9 +169,9 @@ final class AppState: ObservableObject {
             knownAccounts = snap.knownAccounts
             lastError = nil
             await refreshUsage()
-            // Unconditional — not gated on auto-switch being enabled. Covers both a purely local
+            // Unconditional, not gated on auto-switch being enabled. Covers a purely local
             // account's quarantine (fingerprint-based, see AutoSwitchEngine.releaseRecovered) and,
-            // via refreshUsage below, a shared account's owner recovering and re-syncing it.
+            // via refreshUsage above, a shared account's owner recovering and re-syncing it.
             await autoSwitchEngine.releaseRecovered()
             refreshAttributionSessionState()
         } catch {
@@ -141,18 +183,15 @@ final class AppState: ObservableObject {
         for account in knownAccounts {
             guard let usage = try? await bridge.readUsage(accountUuid: account.accountUuid) else { continue }
             usageByAccount[account.accountUuid] = usage
-            // v1 usage-push (see PoolSyncService's header comment on why this isn't the
-            // poll-leader engine yet): whichever client actually has local credentials for an
-            // account is exactly the client that can read its usage, so pushing here — rather
-            // than from a separate polling loop — costs nothing extra and needs no coordination.
+            // Whichever client holds local credentials for an account is exactly the client that
+            // can read its usage, so publishing here costs nothing extra and needs no
+            // coordination. `PollLeaderController` covers the accounts nobody is driving.
             if let poolAccount = poolAccountsByUuid[account.accountUuid], let member = currentMember {
                 try? await poolSync.pushUsage(accountId: poolAccount.id, usage: usage, fetchedBy: member.userId)
             }
-            // A successful read is proof this device's stored credential for the account
-            // currently works — the only signal the owner's own device needs to know a re-login
-            // actually landed (see request_reauth's header comment for why a fingerprint-diff
-            // check, used for the local case, doesn't fit here: whoever *reported* it broken
-            // never had this account's token to fingerprint in the first place).
+            // A successful read proves this device's stored credential works, which is the signal
+            // the owner's device needs to know a re-login landed. A fingerprint diff (used for the
+            // local case) can't work here: whoever reported it broken never held the token.
             if let poolAccount = poolAccountsByUuid[account.accountUuid],
                poolAccount.status == .quarantined, poolAccount.ownerUserId == myUserId {
                 await syncRecoveredOwnedAccount(account, poolAccount: poolAccount)
@@ -161,9 +200,8 @@ final class AppState: ObservableObject {
     }
 
     /// Clears the shared quarantine flag and, for a shared account, re-encrypts and re-pushes the
-    /// now-working token so teammates can actually use it again — this is the "gets synced on my
-    /// account here" half of the re-login request flow, triggered automatically the moment this
-    /// device proves (via the successful read in `refreshUsage`) that re-authentication landed.
+    /// now-working token so teammates can use it again. Triggered automatically the moment the
+    /// successful read in `refreshUsage` proves re-authentication landed.
     private func syncRecoveredOwnedAccount(_ account: KnownAccount, poolAccount: PoolAccount) async {
         do {
             try await poolSync.clearAccountReauth(accountId: poolAccount.id)
@@ -171,17 +209,17 @@ final class AppState: ObservableObject {
                 let token = try await bridge.exportToken(accountUuid: account.accountUuid)
                 try await poolSync.pushToken(accountId: poolAccount.id, plaintextToken: token, teamKey: teamKey)
             }
-            toast = "\(account.email) is working again — synced to the team"
+            toast = "\(account.email) is working again. Synced to the team."
             Diagnostics.log("re-auth recovered: \(account.email)")
             await refreshPool()
         } catch {
-            // Best-effort — retried on the next refresh cycle if this failed transiently.
+            // Best-effort: retried on the next refresh cycle if this failed transiently.
         }
     }
 
     /// Adds the currently logged-in account locally. When the pool is configured, `shareMode`
-    /// also pushes it to the team (and, for `.shared`, uploads the encrypted token) — pass `nil`
-    /// to skip the pool entirely (e.g. pool not configured yet, or the panel didn't ask).
+    /// also pushes it to the team, and for `.shared` uploads the encrypted token. Pass `nil` to
+    /// skip the pool entirely (pool not configured, or the panel didn't ask).
     func addCurrentAccount(shareMode: ShareMode? = nil) async {
         do {
             let account = try await bridge.addCurrent()
@@ -204,69 +242,95 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Switches to a row from the merged display list — handles all three shapes: an
-    /// already-local account (plain activate), a shared pool account never activated here
-    /// before (claim → decrypt → import-activate), and a visibility-only pool account this
-    /// device can't activate at all (surfaces an error rather than silently no-op'ing).
-    /// No re-entrancy guard here used to mean a burst of rapid clicks fired overlapping async
-    /// switches: each one snapshots `activeAccount` at call-start, so a second call launched
-    /// before the first's trailing `refresh()` lands would capture a stale "previous account,"
-    /// releasing the wrong claim (or none) and leaving multiple accounts claimed at once with no
-    /// error and no visual sign anything was happening — exactly what looked like "switching does
-    /// nothing." `beginSwitching()`/`endSwitching()` below is the shared mutex now guarding every
-    /// switch-initiating path, not just this one — see their doc comment.
+    /// Switches to a row from the merged display list. Three shapes: an already-local account
+    /// (plain activate), a shared pool account never activated here (claim, decrypt,
+    /// import-activate), and a visibility-only account this device can't activate (surfaces an
+    /// error rather than silently no-op'ing).
+    ///
+    /// Guarded by `beginSwitching()`/`endSwitching()`, the mutex shared with the quick-switch
+    /// buttons and the automatic engine. Without it, overlapping switches each snapshot
+    /// `activeAccount` at call-start, so one launched before another's trailing `refresh()` lands
+    /// releases the wrong claim and leaves several accounts claimed at once.
     func switchTo(_ display: DisplayAccount) async {
         guard beginSwitching() else { return }
         defer { endSwitching() }
         let previousUuid = activeAccount?.accountUuid
         let previousPoolAccountId = previousUuid.flatMap { poolAccountsByUuid[$0]?.id }
+        // Set once a reservation has been taken for the account being switched *to*, so every
+        // early return below can hand it back. Without this, a switch that claimed the account and
+        // then failed (no token row, wrong team key, activate error) left the account reserved by
+        // this device with nothing holding it, blocking teammates until the 5-minute lease lapsed.
+        var claimedTarget: UUID?
+        func releaseClaimedTargetOnFailure() async {
+            guard let claimedTarget else { return }
+            try? await poolSync.releaseClaim(accountId: claimedTarget)
+            if heldClaimAccountId == claimedTarget {
+                heldClaimAccountId = nil
+                heartbeatTimer?.invalidate()
+                heartbeatTimer = nil
+            }
+        }
+        // A live reservation blocks every route to the account, not just the shared-pool one. This
+        // check used to sit inside the `else if` branch below, which only runs for an account this
+        // Mac has *never* activated. Any account you had used before took the `isLocallyKnown`
+        // branch instead and skipped the check entirely, so a row could show "held by <teammate>"
+        // and still switch on click. The auto-switch engine filtered claimed accounts out all
+        // along, and Settings promises reserving "blocks others", so the manual path was the odd
+        // one out. `display.claim` is nil for a lapsed lease (see ClaimRow.isLive), so a stale
+        // reservation can't lock anyone out of their own account.
+        if let heldBy = display.claim?.heldBy, heldBy != myUserId {
+            lastError = "\(display.email) is reserved by \(display.claimedByName ?? "someone else"). Try another account."
+            return
+        }
         do {
             if display.isLocallyKnown {
-                try await claimIfPossible(display)
-                _ = try await bridge.switchTo(accountUuid: display.accountUuid)
+                claimedTarget = try await claimIfPossible(display)
+                do {
+                    _ = try await bridge.switchTo(accountUuid: display.accountUuid)
+                } catch {
+                    await releaseClaimedTargetOnFailure()
+                    throw error
+                }
             } else if let poolAccount = display.poolAccount, poolAccount.shareMode == .shared {
                 guard let teamKey else {
-                    lastError = "This device doesn't have the team key yet — can't decrypt shared accounts."
+                    lastError = "This device doesn't have the team key yet, so it can't decrypt shared accounts."
                     return
                 }
-                // An existing reservation is honored no matter who's looking — reserving is only
-                // ever the account owner's call to make (and only for their own account, see
-                // below), but once made, everyone respects it rather than just whoever happens to
-                // have the toggle on themselves.
-                if let heldBy = display.claim?.heldBy, heldBy != myUserId {
-                    lastError = "\(display.email) is reserved by \(display.claimedByName ?? "someone else") right now — try another account."
-                    return
-                }
-                // Only the account's *owner* may create a reservation on it, and only if they've
-                // opted in — this device never reserves an account someone else owns.
+                // Only the account's owner may reserve it, and only if they've opted in. This
+                // device never reserves an account someone else owns.
                 if reserveAccountsWhileInUse, poolAccount.ownerUserId == myUserId,
-                   let claim = try await poolSync.claim(accountId: poolAccount.id) {
+                   (try await poolSync.claim(accountId: poolAccount.id)) != nil {
+                    claimedTarget = poolAccount.id
                     heldClaimAccountId = poolAccount.id
                     startHeartbeat()
-                    _ = claim
                 }
                 guard let tokenRow = try await poolSync.fetchTeamKeyToken(accountId: poolAccount.id) else {
+                    await releaseClaimedTargetOnFailure()
                     lastError = "No shared token found for \(display.email) yet."
                     return
                 }
-                let plaintext = try TeamCrypto.decrypt(ciphertext: tokenRow.ciphertext, nonce: tokenRow.nonce, key: teamKey)
-                _ = try await bridge.importActivate(
-                    accountUuid: display.accountUuid, token: plaintext,
-                    email: display.email, organizationUuid: display.organizationUuid
-                )
+                do {
+                    let plaintext = try TeamCrypto.decrypt(ciphertext: tokenRow.ciphertext, nonce: tokenRow.nonce, key: teamKey)
+                    _ = try await bridge.importActivate(
+                        accountUuid: display.accountUuid, token: plaintext,
+                        email: display.email, organizationUuid: display.organizationUuid
+                    )
+                } catch {
+                    await releaseClaimedTargetOnFailure()
+                    throw error
+                }
             } else {
-                lastError = "\(display.email) is visibility-only — ask its owner to switch to it, or share the token."
+                lastError = "\(display.email) is visibility-only. Ask its owner to switch to it, or to share the token."
                 return
             }
-            // Release the account we just switched away from — only after the new switch has
-            // actually succeeded, so a failed attempt never gives up a claim on the account the
-            // user is still genuinely on. Unconditional (not toggle-gated): we only ever hold a
-            // claim here if we created one, which is a no-op to release otherwise.
+            // Release the account we just switched away from, only after the new switch actually
+            // succeeded, so a failed attempt never gives up a claim on the account the user is
+            // still on. Unconditional: releasing a claim we never took is a no-op.
             if let previousPoolAccountId, previousPoolAccountId != display.poolAccount?.id {
                 try? await poolSync.releaseClaim(accountId: previousPoolAccountId)
                 if heldClaimAccountId == previousPoolAccountId { heldClaimAccountId = nil }
             }
-            toast = "Switched — takes effect within ~30s, or restart Claude Code now"
+            toast = "Switched. Takes effect within 30s, or restart Claude Code now."
             await logSwitchIfPooled(from: previousUuid, to: display.accountUuid, reason: "manual")
             await refresh()
             await refreshPool()
@@ -275,9 +339,8 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Best-effort audit row for the switch-log (`switch_log` — see `0005_attribution.sql`).
-    /// Silently skipped when there's no team (nothing to audit against) or neither side of the
-    /// switch is a pool account (a purely local switch between two never-pooled accounts).
+    /// Best-effort audit row for `switch_log`. Skipped when there's no team to audit against, or
+    /// when neither side of the switch is a pool account.
     private func logSwitchIfPooled(from: String?, to: String?, reason: String) async {
         guard let team = currentTeam, let member = currentMember else { return }
         let fromId = from.flatMap { poolAccountsByUuid[$0]?.id }
@@ -286,15 +349,46 @@ final class AppState: ObservableObject {
         try? await poolSync.logSwitch(teamId: team.id, userId: member.userId, from: fromId, to: toId, reason: reason)
     }
 
-    /// This device's member id in the current team, or nil solo/pre-pool — exposed read-only so
-    /// the panel can tell which pool accounts the signed-in user owns (only an owner may change
-    /// share mode; see `setShareMode` and the `accounts_update` RLS policy it relies on).
+    /// This device's member id in the current team, or nil when solo. Read-only so the panel can
+    /// tell which pool accounts the signed-in user owns; only an owner may change share mode.
     var myUserId: UUID? { currentMember?.userId }
 
-    /// Upgrades push a fresh encrypted token (only possible from a device that actually holds
-    /// local credentials for the account); downgrades delete the ciphertext outright rather than
-    /// leaving a stale row — see `PoolSyncService.deleteToken`'s header comment. A no-op if the
-    /// caller doesn't own the account or it's already in the requested mode.
+    /// Promotes an account this Mac already holds into the team pool.
+    ///
+    /// The add dialog offers shared / visibility-only / local-only once, at capture time, and
+    /// choosing local-only used to be permanent: `setShareMode` below requires a pool row, which a
+    /// local-only account by definition doesn't have, and every context-menu branch was gated on
+    /// `poolAccount != nil`, so the menu came up empty. The only escape was to switch to the
+    /// account and run "Add current account" again, which works only for the active account and is
+    /// findable by accident at best.
+    func addToPool(_ display: DisplayAccount, shareMode: ShareMode) async {
+        guard display.poolAccount == nil, display.isLocallyKnown,
+              let team = currentTeam, let member = currentMember
+        else { return }
+        lastError = nil
+        do {
+            let identity = AccountIdentity(
+                accountUuid: display.accountUuid,
+                email: display.email,
+                organizationUuid: display.organizationUuid
+            )
+            let poolAccount = try await poolSync.pushAccount(
+                teamId: team.id, ownerUserId: member.userId, identity: identity, shareMode: shareMode
+            )
+            if shareMode == .shared, let teamKey {
+                let token = try await bridge.exportToken(accountUuid: display.accountUuid)
+                try await poolSync.pushToken(accountId: poolAccount.id, plaintextToken: token, teamKey: teamKey)
+            }
+            toast = "\(display.email) is now \(shareMode == .shared ? "shared with the team" : "visible to the team")"
+            await refreshPool()
+        } catch {
+            lastError = (error as? CoreBridgeError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Upgrades push a fresh encrypted token, which is only possible from a device holding local
+    /// credentials. Downgrades delete the ciphertext rather than leaving a stale row. A no-op if
+    /// the caller doesn't own the account or it's already in the requested mode.
     func setShareMode(_ display: DisplayAccount, to mode: ShareMode) async {
         guard let poolAccount = display.poolAccount, poolAccount.ownerUserId == myUserId, poolAccount.shareMode != mode else { return }
         do {
@@ -314,11 +408,10 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// "Someone else's account looks broken" — flags it (visible to the whole team via the
-    /// account's `status`) and records that this user asked, which fires a system notification on
-    /// the owner's own device (see the `reauth_requests` Realtime subscription in
-    /// `startPoolRealtime`). Available on any pool account regardless of quarantine state — the
-    /// person noticing the problem is often ahead of the app's own diagnosis.
+    /// "Someone else's account looks broken". Flags it team-wide via the account's `status` and
+    /// records who asked, which fires a notification on the owner's device (see the
+    /// `reauth_requests` Realtime subscription). Available on any pool account regardless of
+    /// quarantine state, since the person noticing is often ahead of the app's own diagnosis.
     func requestReauth(_ display: DisplayAccount) async {
         guard let poolAccount = display.poolAccount else { return }
         do {
@@ -334,22 +427,24 @@ final class AppState: ObservableObject {
         membersById[poolAccount.ownerUserId]?.displayName
     }
 
-    /// Called for locally-known accounts — which isn't the same thing as *owned*: a teammate's
-    /// shared account you've activated here before is locally known too. Only ever reserves an
-    /// account you actually own, and only if you've opted in; a non-owned account here is simply
-    /// skipped rather than blocking the switch, since local credentials already work regardless
-    /// (the claimed-by badge, if any, still reflects the owner's own reservation honestly).
-    private func claimIfPossible(_ display: DisplayAccount) async throws {
-        guard reserveAccountsWhileInUse, let poolAccount = display.poolAccount, poolAccount.ownerUserId == myUserId else { return }
-        if let claim = try await poolSync.claim(accountId: poolAccount.id) {
-            heldClaimAccountId = poolAccount.id
-            startHeartbeat()
-            _ = claim
-        }
+    /// Called for locally-known accounts, which is not the same as owned: a teammate's shared
+    /// account you've activated here before is locally known too. Only ever reserves an account
+    /// you own, and only if you've opted in. A non-owned account is skipped rather than blocking
+    /// the switch, since local credentials work regardless.
+    ///
+    /// Returns the pool account id if a reservation was actually taken, so the caller can hand it
+    /// back should the switch itself then fail.
+    @discardableResult
+    private func claimIfPossible(_ display: DisplayAccount) async throws -> UUID? {
+        guard reserveAccountsWhileInUse, let poolAccount = display.poolAccount, poolAccount.ownerUserId == myUserId else { return nil }
+        guard try await poolSync.claim(accountId: poolAccount.id) != nil else { return nil }
+        heldClaimAccountId = poolAccount.id
+        startHeartbeat()
+        return poolAccount.id
     }
 
     /// The reservation opt-in (Settings → Team). Off by default. Turning it off gives up any lease
-    /// this device currently holds so nothing shows as reserved by us anymore.
+    /// this device holds, so nothing shows as reserved by us anymore.
     func setReserveAccountsWhileInUse(_ enabled: Bool) {
         reserveAccountsWhileInUse = enabled
         UserDefaults.standard.set(enabled, forKey: "com.claudecodeswitcher.reserveAccounts")
@@ -361,22 +456,18 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Adopts a claim made outside `switchTo`/`claimIfPossible` — specifically `AutoSwitchEngine`,
-    /// which claims a candidate itself before activating it (see `tryActivate`). Without this, an
-    /// auto-switched-to (or quick-switch-button-switched-to) account's claim would never get
-    /// heartbeated here and would silently expire after 5 minutes even while genuinely active —
-    /// only claims taken by clicking a row directly were being kept alive before this existed.
+    /// Adopts a claim made outside `switchTo`/`claimIfPossible`, specifically by
+    /// `AutoSwitchEngine`, which claims a candidate itself before activating it. Without this, an
+    /// auto-switched-to account's claim would never be heartbeated and would expire after 5
+    /// minutes while genuinely active.
     func adoptClaim(accountId: UUID) {
         heldClaimAccountId = accountId
         startHeartbeat()
     }
 
-    /// Single mutex guarding every switch-initiating path — manual row clicks (`switchTo`), the
-    /// quick-switch buttons, and `AutoSwitchEngine`'s own automatic tick — so none of them can
-    /// race each other. Without this, two switches in flight at once each capture a stale
-    /// "previous account" snapshot and release the wrong claim (or none), which is exactly the
-    /// bug that made switching look broken: rapid clicks left multiple accounts claimed
-    /// simultaneously with no error and no visual feedback that anything was happening.
+    /// Single mutex guarding every switch-initiating path: manual row clicks, the quick-switch
+    /// buttons, and `AutoSwitchEngine`'s automatic tick. Without it, two switches in flight each
+    /// capture a stale "previous account" snapshot and release the wrong claim.
     func beginSwitching() -> Bool {
         guard !isSwitching else { return false }
         isSwitching = true
@@ -385,6 +476,19 @@ final class AppState: ObservableObject {
 
     func endSwitching() {
         isSwitching = false
+    }
+
+    private func pruneExpiredClaims() {
+        let expired = claimsByAccountId.filter { !$0.value.isLive }.keys
+        guard !expired.isEmpty else { return }
+        for accountId in expired { claimsByAccountId.removeValue(forKey: accountId) }
+        // If the lease we let lapse was our own, stop pretending we still hold it, so the next
+        // switch doesn't try to release a claim the server already considers free.
+        if let held = heldClaimAccountId, expired.contains(held) {
+            heldClaimAccountId = nil
+            heartbeatTimer?.invalidate()
+            heartbeatTimer = nil
+        }
     }
 
     private func startHeartbeat() {
@@ -428,16 +532,15 @@ final class AppState: ObservableObject {
 
     // MARK: - Pool (Supabase) state
 
-    /// Called once from RootView when `PoolState.step` reaches `.ready`. Idempotent against
-    /// being called again with the same team (e.g. a spurious SwiftUI re-evaluation). `auth` is
-    /// `PoolState`'s `AuthController` — subscribed to here (not passed per-call) so the attribution
-    /// hook's session-state file stays current on every token refresh for the app's whole
-    /// lifetime, independent of whether the panel view happens to be on-screen at the time.
+    /// Called from RootView when `PoolState.step` reaches `.ready`. Idempotent against being
+    /// called again with the same team. `auth` is subscribed to here rather than passed per-call,
+    /// so the attribution hook's session file stays current on every token refresh regardless of
+    /// whether the panel is on-screen.
     func configurePool(team: Team, member: Member, auth: AuthController) {
         guard currentTeam?.id != team.id else { return }
-        // Switching teams (multi-team): tear the previous team's live wiring down first so its
-        // Realtime subscriptions, poll-leader lease, engines and cached rows don't leak into or
-        // race the new team. A first-time setup (currentTeam == nil) skips straight past this.
+        // Switching teams: tear the previous team's wiring down first so its Realtime
+        // subscriptions, poll-leader lease, engines and cached rows don't leak into the new team.
+        // First-time setup (currentTeam == nil) skips this.
         if currentTeam != nil { teardownPool() }
         currentTeam = team
         currentMember = member
@@ -467,13 +570,22 @@ final class AppState: ObservableObject {
             }
         }
 
+        // Drops reservations whose lease has run out. Purely local bookkeeping against rows we
+        // already hold, with no network call: a lapsing lease generates no event of its own, so
+        // without this tick a "held by" badge stays on screen until something unrelated happens to
+        // refresh the pool. Mutating the dictionary is what republishes it to the views.
+        claimExpiryTimer?.invalidate()
+        claimExpiryTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.pruneExpiredClaims() }
+        }
+
         autoSwitchEngine.start(settings: autoSwitchSettings, teamKey: teamKey, myUserId: member.userId, teamId: team.id)
     }
 
-    /// Unwinds everything `configurePool` set up for the current team — used when switching to a
-    /// different team, so the app can be reconfigured cleanly. Clears pool-derived caches but
-    /// leaves `usageByAccount` (a later `refresh()` rebuilds local usage; stale pool entries drop
-    /// out once `poolAccountsByUuid` no longer references them).
+    /// Unwinds everything `configurePool` set up, so the app can be reconfigured cleanly when
+    /// switching teams. Clears pool-derived caches but leaves `usageByAccount`: a later
+    /// `refresh()` rebuilds local usage, and stale pool entries drop out once
+    /// `poolAccountsByUuid` no longer references them.
     private func teardownPool() {
         realtimeTasks.forEach { $0.cancel() }
         realtimeTasks = []
@@ -484,6 +596,8 @@ final class AppState: ObservableObject {
         pollLeaderController.stop()
         pollLeaderStatusTimer?.invalidate()
         pollLeaderStatusTimer = nil
+        claimExpiryTimer?.invalidate()
+        claimExpiryTimer = nil
         isPollLeader = false
         authCancellable?.cancel()
         poolAccountsByUuid = [:]
@@ -494,12 +608,11 @@ final class AppState: ObservableObject {
         teamKey = nil
     }
 
-    // MARK: - Attribution (turn-log hook — BUILD_PLAN.md section 8)
+    // MARK: - Attribution (turn-log hook)
 
-    /// Installs/removes the `UserPromptSubmit` hook with explicit consent (called from a toggle
-    /// in `TeamUsageView`, never automatically) and keeps the on-disk state matching what actually
-    /// happened rather than what was requested, in case the install itself fails (e.g. no write
-    /// access to `~/.claude/`).
+    /// Installs or removes the `UserPromptSubmit` hook with explicit consent, never automatically.
+    /// Keeps the flag matching what actually happened rather than what was requested, in case the
+    /// install fails (no write access to `~/.claude/`, say).
     func setAttributionEnabled(_ enabled: Bool) {
         do {
             if enabled {
@@ -511,7 +624,7 @@ final class AppState: ObservableObject {
                 attributionEnabled = false
             }
         } catch {
-            lastError = "Couldn't \(enabled ? "enable" : "disable") turn-count attribution: \(error.localizedDescription)"
+            lastError = "Couldn't \(enabled ? "enable" : "disable") prompt logging: \(error.localizedDescription)"
         }
     }
 
@@ -520,9 +633,8 @@ final class AppState: ObservableObject {
         refreshAttributionSessionState()
     }
 
-    /// Rewrites `~/.ccswitch/session.env` (the hook script's only input) whenever any of the four
-    /// pieces of state it needs might have changed. Cheap and idempotent by design — every call
-    /// site here just calls this rather than trying to diff what actually changed.
+    /// Rewrites `~/.ccswitch/session.env`, the hook script's only input, whenever any of the state
+    /// it needs might have changed. Cheap and idempotent by design, so call sites don't diff.
     private func refreshAttributionSessionState() {
         guard attributionEnabled else { return }
         guard let team = currentTeam, let token = lastAccessToken else {
@@ -535,10 +647,10 @@ final class AppState: ObservableObject {
 
     // MARK: - Quick-switch (manual, distinct from the automatic engine above)
 
-    /// One-click "switch to whichever eligible account has the most headroom right now" —
-    /// reuses `AutoSwitchEngine`'s claim-aware, quarantine-aware scoring but isn't gated by the
-    /// enabled toggle, threshold, hysteresis, or cooldown: the user asked for this switch
-    /// directly. Works standalone too (no pool configured) across purely local accounts.
+    /// One-click "switch to whichever eligible account has the most headroom". Reuses
+    /// `AutoSwitchEngine`'s claim- and quarantine-aware scoring, but isn't gated by the enabled
+    /// toggle, threshold, hysteresis, or cooldown, since the user asked for it directly. Works
+    /// with no pool configured, across purely local accounts.
     @discardableResult
     func switchToBestAccount() async -> AutoSwitchEvent {
         guard beginSwitching() else { return .blocked(reason: "a switch is already in progress") }
@@ -547,7 +659,7 @@ final class AppState: ObservableObject {
     }
 
     /// One-click "move to the next account" in the same email-sorted order the panel renders,
-    /// wrapping around. Ignores usage by design — a manual round-robin, not a usage decision.
+    /// wrapping around. Ignores usage by design: a manual round-robin, not a usage decision.
     @discardableResult
     func rotateAccount() async -> AutoSwitchEvent {
         guard beginSwitching() else { return .blocked(reason: "a switch is already in progress") }
@@ -569,10 +681,9 @@ final class AppState: ObservableObject {
         autoSwitchEngine.updateSettings(autoSwitchSettings)
     }
 
-    /// General setter for the Settings window's auto-switch tab, where cooldown / hysteresis /
-    /// interval are also exposed. Persists and hands the whole struct to the engine (which
-    /// re-arms its loop if `enabled`/`intervalSeconds` changed) in one pass, so the panel's quick
-    /// toggle and the full settings tab can't disagree about what's active.
+    /// General setter for the Settings window's auto-switch pane, where cooldown, hysteresis and
+    /// interval are also exposed. Persists and hands the whole struct to the engine in one pass,
+    /// so the panel's quick toggle and the settings pane can't disagree about what's active.
     func updateAutoSwitchSettings(_ newSettings: AutoSwitchSettings) {
         autoSwitchSettings = newSettings
         autoSwitchSettings.saveToDefaults()
@@ -581,15 +692,51 @@ final class AppState: ObservableObject {
 
     // MARK: - Account management (Settings → My Accounts)
 
-    /// Whether the signed-in user owns this account (added it) and so may change its sharing,
-    /// remove it, or transfer it — everywhere the Settings UI needs to gate an owner-only control.
+    /// Whether the signed-in user owns this account and so may change its sharing, remove it, or
+    /// transfer it. Gates every owner-only control in Settings.
     func isOwner(of account: DisplayAccount) -> Bool {
         account.poolAccount?.ownerUserId == myUserId
     }
 
-    /// Forgets an account from the team pool entirely (owner-only) — distinct from `remove`, which
-    /// only drops the *local* copy on this Mac. Also drops the local copy if present, so an
-    /// account you both own and hold locally disappears from both places in one action.
+    /// Pulls an account out of the pool while keeping this Mac's own copy: the exact inverse of
+    /// `addToPool`, and the reason choosing a share mode is no longer a one-way decision in either
+    /// direction. Owner-only, enforced again by the `accounts_delete` RLS policy.
+    ///
+    /// Distinct from `removeFromPool` below, which additionally deletes the local credentials and
+    /// so forgets the account entirely. Here the row goes away, cascading its token, usage and
+    /// claim rows so no orphaned ciphertext is left behind in Supabase, but the account stays
+    /// switchable on this Mac. `switch_log` history survives, since those foreign keys are
+    /// `on delete set null` (20260723000002).
+    ///
+    /// Requires a local copy: without one there would be nothing left to demote *to*, and this
+    /// would silently become a full delete. The UI hides the action in that case rather than
+    /// relying on this guard.
+    func demoteToLocalOnly(_ account: DisplayAccount) async {
+        guard let poolAccount = account.poolAccount,
+              poolAccount.ownerUserId == myUserId,
+              account.isLocallyKnown
+        else { return }
+        lastError = nil
+        do {
+            try await poolSync.removeAccountFromPool(accountId: poolAccount.id)
+            // The lease died with the row, so stop heartbeating something that no longer exists.
+            if heldClaimAccountId == poolAccount.id {
+                heldClaimAccountId = nil
+                heartbeatTimer?.invalidate()
+                heartbeatTimer = nil
+            }
+            claimsByAccountId.removeValue(forKey: poolAccount.id)
+            poolAccountsByUuid.removeValue(forKey: account.accountUuid)
+            toast = "\(account.email) is on this Mac only now. Teammates can't see it."
+            await refreshPool()
+        } catch {
+            lastError = (error as? CoreBridgeError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Forgets an account from the team pool (owner-only). Distinct from `remove`, which drops
+    /// only this Mac's local copy. Drops the local copy too when present, so an account you both
+    /// own and hold locally disappears from both places in one action.
     func removeFromPool(_ account: DisplayAccount) async {
         guard let poolAccount = account.poolAccount else { return }
         lastError = nil  // clear any stale error so it can't be mistaken for this attempt's result
@@ -607,9 +754,9 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Hands an account you own to another team member (the "wrong person added it" fix). After
-    /// this you lose owner controls over it and they gain them — enforced server-side too, so a
-    /// stale client can't keep editing it.
+    /// Hands an account you own to another team member: the "wrong person added it" fix. After
+    /// this you lose owner controls and they gain them, enforced server-side too, so a stale
+    /// client can't keep editing it.
     func transferOwnership(_ account: DisplayAccount, to newOwner: UUID) async {
         guard let poolAccount = account.poolAccount else { return }
         do {
@@ -668,27 +815,26 @@ final class AppState: ObservableObject {
                 NotificationService.post(title: "Switched accounts", body: "Now using \(email) (\(trigger))")
             }
         case .quarantined(let email, let reason):
-            toast = "\(email) quarantined (\(reason)) — re-login to recover it"
+            toast = "\(email) quarantined (\(reason)). Re-login to recover it."
             Diagnostics.log("quarantine: \(email) (\(reason))")
             NotificationService.post(title: "Account quarantined", body: "\(email) needs re-login (\(reason))")
         case .recovered(let email):
-            toast = "\(email) recovered from quarantine — eligible again"
+            toast = "\(email) recovered. Eligible again."
             Diagnostics.log("recovered: \(email)")
         case .allExhausted:
-            toast = "All accounts near their limit — nothing to switch to"
+            toast = "All accounts near their limit. Nothing to switch to."
             Diagnostics.log("all accounts exhausted")
             NotificationService.post(title: "All accounts near their limit", body: "No account has headroom to switch to right now")
         case .error(let message):
             lastError = message
             Diagnostics.log("auto-switch error: \(message)")
         case .blocked:
-            break  // routine — not worth surfacing as a toast every tick
+            break  // routine, not worth a toast every tick
         }
     }
 
-    /// Internal (not private): AutoSwitchEngine calls this after it performs a switch of its own,
-    /// so claimed-by badges and cached usage reflect the new state without waiting for the next
-    /// Realtime event to round-trip.
+    /// Internal, not private: AutoSwitchEngine calls this after a switch of its own, so
+    /// claimed-by badges and cached usage reflect the new state without waiting for Realtime.
     func refreshPool() async {
         guard let team = currentTeam else { return }
         do {
@@ -698,7 +844,7 @@ final class AppState: ObservableObject {
             let ids = accounts.map(\.id)
             let claims = try await poolSync.fetchClaims(teamAccountIds: ids)
             claimsByAccountId = Dictionary(uniqueKeysWithValues: claims.compactMap { claim in
-                claim.heldBy != nil ? (claim.accountId, claim) : nil
+                claim.isLive ? (claim.accountId, claim) : nil
             })
 
             let usageRows = try await poolSync.fetchUsage(teamAccountIds: ids)
@@ -744,7 +890,7 @@ final class AppState: ObservableObject {
             Task { [poolSync] in
                 await poolSync.subscribeChanges(table: "claims", as: ClaimRow.self) { [weak self] claim in
                     Task { @MainActor in
-                        if claim.heldBy != nil {
+                        if claim.isLive {
                             self?.claimsByAccountId[claim.accountId] = claim
                         } else {
                             self?.claimsByAccountId.removeValue(forKey: claim.accountId)
@@ -760,10 +906,9 @@ final class AppState: ObservableObject {
         ]
     }
 
-    /// Fires the actual "Ishaan Pilar is requesting re-login…" system notification — but only on
-    /// the device belonging to the account's *owner*; every other team member's client also
-    /// receives this same Realtime insert (it's team-wide, not targeted), so the owner check here
-    /// is what keeps it from popping up on everyone's screen.
+    /// Fires the "requesting re-login" notification, but only on the account owner's device. Every
+    /// team member's client receives this same Realtime insert, since it's team-wide rather than
+    /// targeted, so the owner check here is what keeps it off everyone else's screen.
     private func handleReauthRequest(_ request: ReauthRequest) {
         guard let poolAccount = poolAccountsByUuid.values.first(where: { $0.id == request.accountId }),
               poolAccount.ownerUserId == myUserId
@@ -777,8 +922,8 @@ final class AppState: ObservableObject {
         )
     }
 
-    /// The merged list the panel actually renders — see `DisplayAccount`'s header comment for
-    /// why neither source alone is sufficient.
+    /// The merged list the panel renders. See `DisplayAccount` for why neither source alone
+    /// suffices.
     var displayAccounts: [DisplayAccount] {
         var rows: [String: DisplayAccount] = [:]
         for account in knownAccounts {
@@ -798,10 +943,14 @@ final class AppState: ObservableObject {
 
     private func makeDisplayAccount(accountUuid: String, email: String, organizationUuid: String?, isLocallyKnown: Bool) -> DisplayAccount {
         let poolAccount = poolAccountsByUuid[accountUuid]
-        let claim = poolAccount.flatMap { claimsByAccountId[$0.id] }
-        // Always reflects real claim state, regardless of the viewer's own reservation preference
-        // — a claim only ever exists because the account's *owner* reserved it (see switchTo /
-        // claimIfPossible), so showing it honestly is what makes that reservation mean anything.
+        // Re-checked at render time, not just when the row was stored: a lease can lapse with no
+        // corresponding server event to react to, so the stored copy goes stale on its own.
+        let claim = poolAccount
+            .flatMap { claimsByAccountId[$0.id] }
+            .flatMap { $0.isLive ? $0 : nil }
+        // Always reflects real claim state, regardless of the viewer's own reservation preference.
+        // A claim only ever exists because the account's owner reserved it, so showing it honestly
+        // is what makes that reservation mean anything.
         let claimedByName = claim?.heldBy.flatMap { membersById[$0]?.displayName }
         return DisplayAccount(
             accountUuid: accountUuid, email: email, organizationUuid: organizationUuid,
@@ -810,9 +959,9 @@ final class AppState: ObservableObject {
         )
     }
 
-    /// Menu bar title text: active account's email + tightest usage window, or a neutral
-    /// placeholder when nobody's logged in yet. Kept here (not in the view) so both the
-    /// `MenuBarExtra` label and any future notification text render it identically.
+    /// Menu bar title: active account's email plus its tightest usage window, or a placeholder
+    /// when nobody's logged in. Kept here rather than in the view so every surface renders it
+    /// identically.
     var titleText: String {
         guard let active = activeAccount else { return "Not logged in" }
         if let pct = usageByAccount[active.accountUuid]?.tightestPct {

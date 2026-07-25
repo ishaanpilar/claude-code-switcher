@@ -1,16 +1,14 @@
 import CryptoKit
 import Foundation
 
-/// Poll-leader election and the leader's usage-sweep loop (BUILD_PLAN.md section 3a). Only one
-/// online client polls Anthropic's usage API on behalf of accounts nobody is actively driving
-/// right now — everyone else gets those numbers for free over Realtime (`AppState`'s
-/// `usage_current` subscription). Adding accounts or team members must not increase Anthropic API
-/// volume; this file is the piece that makes that true.
+/// Poll-leader election and the leader's usage-sweep loop. Only one online client polls
+/// Anthropic's usage API for accounts nobody is actively driving; everyone else gets those numbers
+/// over Realtime. Adding accounts or team members must not increase Anthropic API volume, and this
+/// file is what makes that true.
 ///
-/// Scope note: "poll leader" only ever means *coordinator for accounts this device can
-/// decrypt* — a visibility-only account's token never leaves its owner's Mac by design, so no
-/// leader, elected or not, can poll it. Those accounts' usage numbers come only from their
-/// owner's own client (`AppState.refreshUsage`), whoever the leader happens to be.
+/// Scope note: "poll leader" only ever means coordinator for accounts this device can decrypt. A
+/// visibility-only account's token never leaves its owner's Mac by design, so no leader can poll
+/// it; those numbers come only from the owner's own client.
 @MainActor
 final class PollLeaderController {
     private let poolSync = PoolSyncService()
@@ -31,9 +29,9 @@ final class PollLeaderController {
         self.bridge = bridge
     }
 
-    /// `getAccounts` and `onUsagePolled` are closures rather than a direct `AppState` reference
-    /// so this controller stays testable/reusable independent of the view-layer state object —
-    /// `AppState` wires both in `configurePool`.
+    /// `getAccounts` and `onUsagePolled` are closures rather than a direct `AppState` reference so
+    /// this controller stays independent of the view-layer state object. `AppState` wires both in
+    /// `configurePool`.
     func start(
         team: Team,
         myUserId: UUID,
@@ -71,9 +69,8 @@ final class PollLeaderController {
             do {
                 try await poolSync.heartbeatPollLeader(teamId: team.id)
             } catch {
-                // Lease heartbeat failed (network blip, or someone else's clock somehow won a
-                // race) — stop polling rather than risk two leaders double-hitting the API;
-                // the next tick re-attempts election normally.
+                // Lease heartbeat failed, from a network blip or a lost race. Stop polling rather
+                // than risk two leaders double-hitting the API; the next tick re-elects normally.
                 isLeader = false
                 loopTask?.cancel()
             }
@@ -93,10 +90,10 @@ final class PollLeaderController {
         }
     }
 
-    /// One sweep: for every pool account whose cadence plan says it's due, resolve a token
-    /// (local backup first, else decrypt the shared team-key row), fetch usage, replan its next
-    /// due time, and publish the result. Accounts this device can't decrypt (someone else's
-    /// visibility-only account) are silently skipped — not an error, just not this leader's job.
+    /// One sweep: for every pool account whose cadence plan says it's due, resolve a token (local
+    /// backup first, else decrypt the shared team-key row), fetch usage, replan its next due time,
+    /// and publish the result. Accounts this device can't decrypt are skipped, which is not an
+    /// error, just not this leader's job.
     private func pollDuePass() async {
         guard let getAccounts, let myUserId else { return }
         let now = Date()
@@ -111,9 +108,9 @@ final class PollLeaderController {
                     prevIntervalS: state.lastIntervalS,
                     prevUsage: state.lastUsage,
                     newUsage: usage,
-                    isActive: false,  // the leader's sweep only ever covers non-actively-driven
-                                      // accounts — an active one is already kept fresh by whoever
-                                      // is driving it, via AppState.refreshUsage's own push.
+                    isActive: false,  // the sweep only covers accounts nobody is driving; an
+                                      // active one is kept fresh by whoever is driving it, via
+                                      // AppState.refreshUsage's own push.
                     threshold: 90,
                     recent429: state.hasRecent429,
                     now: now

@@ -1,15 +1,14 @@
 import Foundation
 
-/// Adaptive usage-polling cadence — ported from claude-swap's `poll_policy.py` (MIT). That file's
+/// Adaptive usage-polling cadence, ported from claude-swap's `poll_policy.py` (MIT). That file's
 /// header documents the measured shape this leans on: the `/api/oauth/usage` endpoint enforces a
-/// rolling ~60-minute budget of ~28-30 requests per access token, not a refill-rate bucket, so
-/// the constants below target a sustained average of roughly 1 request/3min per token — leaving
-/// headroom for manual switches and a bounded "urgent mode" near the switch threshold. If a
-/// future probe revises that shape, this is the only file to touch.
+/// rolling ~60-minute budget of ~28-30 requests per access token rather than a refill-rate bucket.
+/// So the constants below target a sustained average of roughly 1 request per 3 minutes per token,
+/// leaving headroom for manual switches and a bounded "urgent mode" near the switch threshold. If
+/// a future probe revises that shape, this is the only file to touch.
 ///
-/// Pure functions plus one small per-account state struct — no OS calls, no actor isolation
-/// requirement — so the exact same cadence math runs whether or not this device happens to be
-/// poll leader this hour (see `PollLeaderController`).
+/// Pure functions plus one small per-account state struct: no OS calls, no actor isolation, so the
+/// same cadence math runs whether or not this device is poll leader this hour.
 enum PollPolicy {
     static let minIntervalS: TimeInterval = 180
     static let urgentIntervalS: TimeInterval = 60
@@ -28,18 +27,18 @@ enum PollPolicy {
         let intervalS: TimeInterval
     }
 
-    /// Utilization of the binding (tightest) relevant window — same "tighter window wins" rule
-    /// `Usage.tightestPct` already implements, kept as its own entry point here so the cadence
-    /// math reads the same way claude-swap's `binding_pct` does.
+    /// Utilization of the binding (tightest) relevant window: the same "tighter window wins" rule
+    /// `Usage.tightestPct` implements, kept as its own entry point so the cadence math reads the
+    /// same way claude-swap's `binding_pct` does.
     static func bindingPct(_ usage: Usage?) -> Double? {
         usage?.tightestPct
     }
 
     /// `(nextPollAt, intervalS)` for an account just fetched successfully.
     ///
-    /// Movement (binding pct changed ≥ `movementDeltaPct` since the previous poll) halves the
-    /// interval, floored at `minIntervalS` — or drops to `urgentIntervalS` when this is the
-    /// active account moving inside the escalation band. No movement backs off ×1.5 toward the
+    /// Movement (binding pct changed by at least `movementDeltaPct` since the previous poll)
+    /// halves the interval, floored at `minIntervalS`, or drops to `urgentIntervalS` when this is
+    /// the active account moving inside the escalation band. No movement backs off ×1.5 toward the
     /// account's ceiling. A recent 429 floors the cadence at `post429MinIntervalS` and suppresses
     /// urgent mode. The result gets `jitterFrac` noise so independent clients don't fetch in
     /// lockstep, and is clamped to the account's own known window resets: never later than the
@@ -124,10 +123,9 @@ enum PollPolicy {
 }
 
 /// Per-account cadence state the leader keeps in memory while it holds the lease. Not persisted
-/// across a leader handoff (a fresh leader just starts every account at its default interval) —
-/// a deliberate v1 simplification vs. claude-swap's disk-persisted usage store; losing a few
-/// polls' worth of learned cadence on handoff costs nothing but a slightly less-tuned interval
-/// for one cycle.
+/// across a handoff, so a fresh leader starts every account at its default interval. A deliberate
+/// simplification against claude-swap's disk-persisted usage store: losing a few polls' worth of
+/// learned cadence costs nothing but a slightly less-tuned interval for one cycle.
 struct AccountPollState {
     var lastUsage: Usage?
     var lastIntervalS: TimeInterval?

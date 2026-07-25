@@ -1,7 +1,7 @@
 """Cooperate with Claude Code's own advisory locks while mutating its files.
 
-Ported near-verbatim from claude-swap (MIT) — this is the single most
-correctness-critical file in the whole core and must not be re-derived.
+Ported near-verbatim from claude-swap (MIT). This is the single most
+correctness-critical file in the core and must not be re-derived.
 
 Claude Code guards its OAuth token refresh with the npm ``proper-lockfile``
 package on the config home directory, and its ``~/.claude.json`` writes with
@@ -16,12 +16,11 @@ the same mechanism on the config file. The protocol:
   sleeps before giving up, so briefly holding it is fully cooperative.
 
 Holding these locks while swapping credentials closes the one real race with a
-running Claude Code: its refresh reads credentials, refreshes over the network,
-and saves — all under ``~/.claude.lock`` — so a swap landing inside that window
-would be overwritten by the refreshed old-account token (and the just-taken
-backup would keep a pre-rotation refresh token). Under the lock, Claude Code's
-own double-checked re-read sees the swapped (non-expired) credential and aborts
-the refresh instead.
+running Claude Code. Its refresh reads credentials, refreshes over the network,
+and saves, all under ``~/.claude.lock``, so a swap landing inside that window
+would be overwritten by the refreshed old-account token, and the just-taken
+backup would keep a pre-rotation refresh token. Under the lock, Claude Code's
+own double-checked re-read sees the swapped credential and aborts the refresh.
 """
 
 from __future__ import annotations
@@ -82,7 +81,7 @@ def proper_lockfile(
             pass
         if time.monotonic() - start > timeout:
             raise ClaudeCodeLockTimeout(
-                f"Could not acquire {lock_dir.name} — Claude Code appears "
+                f"Could not acquire {lock_dir.name}. Claude Code appears "
                 "to be refreshing credentials. Retry in a few seconds."
             )
         try:

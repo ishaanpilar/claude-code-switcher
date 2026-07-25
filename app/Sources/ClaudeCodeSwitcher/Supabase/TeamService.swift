@@ -1,12 +1,11 @@
 import Foundation
 import Supabase
 
-/// Team creation/membership/invites — thin wrappers over the RPCs in
-/// supabase/migrations/20260720000008_team_invites.sql. Deliberately RPC-only for every mutation
-/// here (never a raw `.from("members").insert(...)`): the RPCs are security definer and encode
-/// the actual join/create rules (owner-only invites, single-use codes, no self-inviting twice),
-/// so a raw insert from the client would either be rejected by RLS or — worse — would need to
-/// duplicate those rules client-side where they could drift from the server's.
+/// Team creation, membership and invites: thin wrappers over the RPCs in supabase/migrations.
+/// Deliberately RPC-only for every mutation, never a raw `.from("members").insert(...)`. The RPCs
+/// are security definer and encode the real rules (owner-only invites, single-use codes, no
+/// joining twice), so a raw insert would either be rejected by RLS or, worse, need those rules
+/// duplicated client-side where they could drift.
 struct TeamService {
     private let client = SupabaseClientProvider.shared
 
@@ -32,16 +31,6 @@ struct TeamService {
             .value
     }
 
-    func team(id: UUID) async throws -> Team {
-        try await client
-            .from("teams")
-            .select()
-            .eq("id", value: id)
-            .single()
-            .execute()
-            .value
-    }
-
     @discardableResult
     func createTeam(name: String) async throws -> Team {
         try await client
@@ -51,8 +40,8 @@ struct TeamService {
             .value
     }
 
-    /// Returns the invite code to share with a teammate out-of-band (text/Slack/etc — this app
-    /// has no notification/DM channel of its own). Owner-only; the RPC itself enforces that.
+    /// Returns the invite code to share with a teammate over text or Slack, since this app has no
+    /// messaging channel of its own. Owner-only, enforced by the RPC.
     func createInvite(teamId: UUID, expiresHours: Int = 24 * 7, maxUses: Int = 1) async throws -> String {
         try await client
             .rpc(
@@ -72,13 +61,14 @@ struct TeamService {
             .value
     }
 
-    /// Removes the caller from their team (and their owned accounts) via the `leave_team` RPC —
-    /// which blocks the team owner from leaving while other members remain, so the error surfaces
-    /// to the UI rather than orphaning the team. No return value; the caller re-derives its state
-    /// from `myMembership` afterward (it'll come back nil).
-    func leaveTeam() async throws {
+    /// Removes the caller from `teamId`, along with the accounts they own in it. The RPC blocks a
+    /// team's owner from leaving while other members remain, so that error surfaces to the UI
+    /// rather than orphaning the team. The team is passed explicitly because a user can belong to
+    /// several: the old no-argument RPC resolved it with a query that matched every membership and
+    /// silently kept whichever row came back first.
+    func leaveTeam(teamId: UUID) async throws {
         try await client
-            .rpc("leave_team")
+            .rpc("leave_team", params: TeamIdParam(p_team: teamId))
             .execute()
     }
 }

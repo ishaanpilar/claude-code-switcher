@@ -17,10 +17,10 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.6</string>
+	<string>0.9.9</string>
 	<key>CFBundleVersion</key>
-	<string>6</string>
-	<!-- Sparkle auto-update — see app/appcast.xml (served via raw.githubusercontent.com off
+	<string>7</string>
+	<!-- Sparkle auto-update. See app/appcast.xml (served via raw.githubusercontent.com off
 	     main) and Engine/UpdaterProvider.swift. SUPublicEDKey is the public half of the EdDSA
 	     keypair `generate_keys` created once; the private half lives only in the release-
 	     builder's login Keychain and signs each release's update .zip via `sign_update`. -->
@@ -30,12 +30,12 @@
 	<string>nG8kovulV7GvHZw1XdNkvv37oRPKw+x8FEFfnF4wiQ0=</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
-	<!-- Menu-bar-only: no Dock icon, no Cmd-Tab entry — declarative equivalent of the runtime
+	<!-- Menu-bar-only: no Dock icon, no Cmd-Tab entry. Declarative equivalent of the runtime
 	     NSApplication.shared.setActivationPolicy(.accessory) call in AppDelegate, kept as belt
 	     and suspenders since this is the one that Launch Services itself respects at launch time. -->
 	<key>LSUIElement</key>
 	<true/>
-	<!-- The magic-link callback scheme — see Client.swift's redirectToURL and
+	<!-- The auth callback scheme. See Client.swift's redirectToURL and
 	     AppDelegate.application(_:open:). Must match the Redirect URLs allow-list entry
 	     (ccswitch://auth-callback) added in the Supabase dashboard's Auth settings. -->
 	<key>CFBundleURLTypes</key>

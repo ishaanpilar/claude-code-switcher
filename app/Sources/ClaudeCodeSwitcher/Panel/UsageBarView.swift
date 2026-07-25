@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// A single labeled usage bar (used for the 5h and 7d windows). Fill color is semantic
-/// (ok/warn/crit) per Theme.usageColor — the visual language the whole panel's usage display
-/// relies on to be glanceable without reading numbers.
+/// (ok/warn/crit) per Theme.usageColor, which is what makes usage glanceable without reading
+/// the numbers.
 struct UsageBarView: View {
     let label: String
     let window: UsageWindow

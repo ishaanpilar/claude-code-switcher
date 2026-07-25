@@ -1,10 +1,8 @@
 import SwiftUI
 
-/// Everything shown before `PoolState.step` reaches `.ready`. One view with a switch over the
-/// step, rather than a NavigationStack of separate screens — this whole thing lives inside a
-/// `MenuBarExtra` dropdown (BUILD_PLAN.md section 7), where a full navigation chrome would be
-/// out of place; a single fixed-width panel that reshapes its content is the same idiom PanelView
-/// itself uses.
+/// Everything shown before `PoolState.step` reaches `.ready`. One view switching over the step
+/// rather than a NavigationStack of screens: this lives inside a `MenuBarExtra` dropdown, where
+/// navigation chrome would be out of place. Same fixed-width, reshaping idiom as PanelView.
 struct OnboardingView: View {
     @ObservedObject var pool: PoolState
     @ObservedObject var router: SettingsRouter
@@ -36,11 +34,9 @@ struct OnboardingView: View {
             .foregroundStyle(Theme.text)
     }
 
-    /// Present on every onboarding step (not just sign-in) — without this, someone signed in but
-    /// not yet on a team (`.needsTeamSetup`) or missing their team key (`.needsTeamKey`) had no way
-    /// to reach About or even quit the app short of Force Quit: this is a `MenuBarExtra` accessory
-    /// app with no Dock icon and no standard app menu, so there's no other Quit anywhere on these
-    /// screens.
+    /// Present on every onboarding step, not just sign-in. This is a `MenuBarExtra` accessory app
+    /// with no Dock icon and no standard app menu, so without these buttons someone stuck at
+    /// `.needsTeamSetup` or `.needsTeamKey` has no way to reach About or quit short of Force Quit.
     private var footer: some View {
         HStack {
             Button {
@@ -70,12 +66,10 @@ struct OnboardingView: View {
         return false
     }
 
-    /// BUILD_PLAN.md section 5's honest caveat, surfaced in onboarding rather than buried —
-    /// "do not add anything that evades detection; just be transparent." Pooling one
-    /// subscription across a group cuts against consumer ToS and can look anomalous to
-    /// Anthropic's systems; the app doesn't try to hide or work around that.
+    /// Surfaced in onboarding rather than buried. Pooling one subscription across a group goes
+    /// against consumer terms; the app doesn't try to hide or work around that.
     private var tosCaveat: some View {
-        Text("Heads up: sharing one subscription across several people and IPs cuts against Anthropic's consumer terms and can look anomalous to their systems — the larger the group, the stronger that signal. This app does nothing to hide or evade that; use it with people you trust to accept the risk together.")
+        Text("Heads up: sharing one subscription across several people and IPs goes against Anthropic's consumer terms, and the bigger the group the more it stands out. This app does nothing to hide that.")
             .font(.system(size: 9))
             .foregroundStyle(Theme.textDim)
             .fixedSize(horizontal: false, vertical: true)
@@ -127,7 +121,7 @@ private struct SignInStep: View {
 
             Divider().padding(.vertical, 2)
 
-            Text("Just juggling your own accounts? Skip the cloud entirely.")
+            Text("Just juggling your own accounts? Skip the cloud.")
                 .font(.system(size: 10))
                 .foregroundStyle(Theme.textDim)
             Button("Use locally, without an account") { pool.enableLocalOnly() }
@@ -199,7 +193,7 @@ private struct TeamSetupStep: View {
 
                 Divider().padding(.vertical, 2)
 
-                Text("Changed your mind about a team? Switch to juggling your own accounts locally instead.")
+                Text("Changed your mind? Use your own accounts locally instead.")
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.textDim)
                 Button("Use locally, without an account") { pool.enableLocalOnly() }
@@ -238,7 +232,7 @@ private struct TeamSetupStep: View {
 
     private func createdSuccessView(key: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Team created. Share this key with teammates when they join — it's the only copy, and it never leaves your devices' Keychains otherwise.")
+            Text("Team created. Share this key with teammates when they join. It's the only copy, and it never leaves your Keychain otherwise.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textDim)
             Text(key)
@@ -256,7 +250,7 @@ private struct TeamSetupStep: View {
 
     private var joinForm: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Ask your team owner for an invite code (panel → \"Invite teammate…\") and the team key.")
+            Text("Ask your team owner for an invite code and the team key.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textDim)
             TextField("Invite code", text: $inviteCode)
@@ -287,7 +281,7 @@ private struct TeamKeyRecoveryStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("You're a member of \"\(team.name)\", but this device doesn't have its team key yet. Paste it below (ask a teammate if you don't have it saved).")
+            Text("You're a member of \"\(team.name)\", but this device doesn't have its team key. Paste it below, or ask a teammate for it.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textDim)
             TextField("Team key", text: $teamKeyInput)

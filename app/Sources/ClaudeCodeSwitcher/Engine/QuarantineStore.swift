@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// One quarantined account: why, when, and — for locally-known accounts — a fingerprint of the
+/// One quarantined account: why, when, and, for locally-known accounts, a fingerprint of the
 /// refresh token that failed, so a real re-login (which mints a new refresh token) can be told
 /// apart from the same dead token still sitting there.
 struct QuarantineEntry: Codable, Equatable {
@@ -12,9 +12,9 @@ struct QuarantineEntry: Codable, Equatable {
 
 /// Disk-persisted quarantine list for `AutoSwitchEngine`, replacing its original in-memory `Set`
 /// (see that file's header comment). Ported from claude-swap's `_release_recovered_quarantines`
-/// idea: a quarantined account is auto-released the moment its refresh-token fingerprint changes
-/// — a real re-login — rather than on a fixed timeout, since a genuinely dead refresh token
-/// doesn't heal itself with time.
+/// idea: a quarantined account is released the moment its refresh-token fingerprint changes,
+/// meaning a real re-login, rather than on a fixed timeout. A dead refresh token doesn't heal
+/// itself with time.
 ///
 /// UserDefaults, matching `AutoSwitchSettings`'s own persistence choice (see that file's header
 /// comment on why this app uses UserDefaults instead of claude-swap's settings.json).
@@ -34,7 +34,7 @@ enum QuarantineStore {
     }
 
     /// SHA-256 of the refresh token embedded in a `claudeAiOauth`-shaped credential JSON string
-    /// (the same shape `CoreBridge.exportToken`/`refreshToken` deal in) — never the token itself,
+    /// (the shape `CoreBridge.exportToken` and `refreshToken` deal in), never the token itself,
     /// so nothing sensitive sits in UserDefaults.
     static func fingerprint(ofCredentialJSON json: String) -> String? {
         guard let data = json.data(using: .utf8),

@@ -6,14 +6,14 @@ import Security
 /// export/import as a copy-pasteable string for onboarding a new member.
 ///
 /// BUILD_PLAN.md section 5 specified libsodium secretbox (XSalsa20-Poly1305); this uses Apple's
-/// CryptoKit `ChaChaPoly` (IETF ChaCha20-Poly1305, RFC 8439) instead — functionally equivalent
+/// CryptoKit `ChaChaPoly` (IETF ChaCha20-Poly1305, RFC 8439) instead: functionally equivalent
 /// authenticated symmetric encryption at a 256-bit key size, ships with macOS, and there's no
 /// interop requirement with an existing libsodium deployment to justify the extra swift-sodium
 /// dependency on a green-field client.
 ///
 /// The key itself never touches Supabase (matches the plan exactly): it's generated once by the
 /// team's first member, exported as a string, and handed to each new member out-of-band (verbally,
-/// a private message, however the group already talks) during onboarding — see OnboardingView.
+/// a private message, however the group already talks) during onboarding.
 /// A fully compromised Supabase project therefore leaks only ciphertext, never a usable token.
 enum TeamKeyStore {
     private static let service = "com.claudecodeswitcher.teamkey"
@@ -22,7 +22,7 @@ enum TeamKeyStore {
         SymmetricKey(size: .bits256)
     }
 
-    /// Base64 — the form shown to the user to copy/paste to a teammate during onboarding.
+    /// Base64: the form shown to the user to copy and paste to a teammate during onboarding.
     static func export(_ key: SymmetricKey) -> String {
         key.withUnsafeBytes { Data($0) }.base64EncodedString()
     }
@@ -67,21 +67,19 @@ enum TeamKeyStore {
 
 enum TeamKeyError: Error, LocalizedError {
     case keychainWrite(OSStatus)
-    case noKey
     case encryptFailed
     case decryptFailed
 
     var errorDescription: String? {
         switch self {
         case .keychainWrite(let status): return "Keychain write failed (OSStatus \(status))"
-        case .noKey: return "No team key stored on this device yet"
         case .encryptFailed: return "Encryption failed"
-        case .decryptFailed: return "Decryption failed — wrong team key, or the data is corrupted"
+        case .decryptFailed: return "Decryption failed. Wrong team key, or the data is corrupted."
         }
     }
 }
 
-/// Encrypt/decrypt for one account's token — the payload that becomes `account_tokens.ciphertext`
+/// Encrypt and decrypt one account's token: the payload that becomes `account_tokens.ciphertext`
 /// / `.nonce` (0002_accounts.sql). The Poly1305 authentication tag is appended to the ciphertext
 /// bytes before base64 (a fixed 16-byte suffix), rather than adding a third stored column, so the
 /// schema only needs the two columns it already has.

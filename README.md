@@ -1,13 +1,12 @@
 # Claude Code Switcher
 
-A little macOS menu-bar app that lets a small group of friends (up to ~10)
-**share a pool of Claude accounts** and always end up working on whichever one
-has usage left — automatically, without stepping on each other.
+A macOS menu-bar app that lets a small group (up to ~10) **share a pool of
+Claude accounts**, always landing on whichever one still has usage left, without
+stepping on each other.
 
-This document explains, in plain language, **how the whole thing actually
-works**: how you sign in, how it runs on your Mac, how it syncs over the
-internet, how several people on several computers stay coordinated, how your
-accounts are kept private, and exactly what rules the auto-switcher follows.
+This explains how it works: signing in, what runs on your Mac, how it syncs, how
+several people stay coordinated, how your accounts stay private, and the exact
+rules the auto-switcher follows.
 
 ---
 
@@ -17,10 +16,9 @@ Each person runs the app on their own Mac. The app knows which Claude accounts
 you're logged into locally, and it talks to a shared cloud database
 (Supabase) so everyone sees the same pool of accounts and their live usage.
 When your current account gets close to its limit, the app switches you to the
-account with the most room left — but never to an account a friend is actively
-using right now. Account passwords (tokens) are **encrypted on your Mac before
-they ever leave it**, using a key only your team has, so the cloud only ever
-stores scrambled data.
+one with the most room left, and never to an account a teammate has reserved.
+Login tokens are **encrypted on your Mac before they leave it**, with a key only
+your team holds, so the cloud only ever stores scrambled data.
 
 ---
 
@@ -55,7 +53,7 @@ graph TD
 - Everyone runs their **own copy** of the app.
 - The **cloud** is just a shared noticeboard: which accounts exist, how much
   each has been used, and who's currently using which one.
-- Each app **only touches Claude Code on its own Mac** — it never reaches into
+- Each app **only touches Claude Code on its own Mac**. It never reaches into
   anyone else's computer.
 
 ---
@@ -76,10 +74,10 @@ graph LR
 
 - **The Swift app** is the menu-bar dropdown. It makes all the decisions, draws
   the UI, talks to the cloud, and does the encryption.
-- **`ccswitch-core`** is a tiny Python helper that is the *only* thing allowed
-  to touch Claude Code's actual login files. The app calls it for one job at a
-  time ("what's logged in?", "switch to this account", "read this account's
-  usage") and it answers, then exits.
+- **`ccswitch-core`** is a small Python helper, the *only* thing allowed to
+  touch Claude Code's login files. The app calls it for one job at a time
+  ("what's logged in?", "switch to this account", "read this account's usage").
+  It answers, then exits.
 
 **Why split it in two?** All the delicate credential handling lives in one
 small, auditable place. And when it writes to Claude Code's files, it uses the
@@ -90,17 +88,16 @@ login even if Claude Code is refreshing its token at the same moment.
 
 ## 4. Signing in and joining a team
 
-You sign in with your **email** — no password. Supabase emails you a link; you
-click it, and because the app registers a `ccswitch://` link on your Mac, the
-click opens the app and you're signed in.
+You sign in with your **email**, no password. Supabase emails you a **6-digit
+code**; you type it into the panel and you're in.
 
 Then one of two things happens:
 
 ```mermaid
 graph TD
     S["Sign in with email"] --> Q{"On a team yet?"}
-    Q -->|"No — first person"| Create["Create a team"]
-    Q -->|"No — joining friends"| Join["Join a team"]
+    Q -->|"No, first person"| Create["Create a team"]
+    Q -->|"No, joining friends"| Join["Join a team"]
     Q -->|"Yes"| Ready["Ready to use"]
 
     Create --> Key["App generates a secret<br/>Team Key, shows it to you"]
@@ -111,13 +108,13 @@ graph TD
 
 - **The first person creates the team.** The app generates a **Team Key** (a
   secret encryption key) and shows it to them once.
-- **Everyone else joins** using two things, handed to them privately by a
-  teammate (text, Slack, in person — the app doesn't send these for you):
-  1. an **invite code** (proves you're allowed onto the team), and
-  2. the **Team Key** (lets your Mac unscramble shared account tokens).
+- **Everyone else joins** with two things, handed over privately by a teammate
+  (text, Slack, in person; the app doesn't send these for you):
+  1. an **invite code**, which proves you're allowed onto the team, and
+  2. the **Team Key**, which lets your Mac unscramble shared account tokens.
 
-Two different secrets on purpose — one gets you *into* the team, the other lets
-you *decrypt* shared logins.
+Two separate secrets on purpose: one gets you *into* the team, the other lets you
+*decrypt* shared logins.
 
 ---
 
@@ -129,12 +126,11 @@ logged into. If your team pool is set up, you choose how to share it:
 | Share mode | What the cloud stores | Who can switch to it |
 |---|---|---|
 | **Shared** | The login token, **encrypted** with the Team Key | Anyone on the team |
-| **Visibility-only** | Just the usage numbers — **no token** | Only you, on your own Mac |
+| **Visibility only** | Just the usage numbers, **no token** | Only you, on your own Mac |
 
-So "visibility-only" means: *my friends can see how much of this account I've
-used, but they can't log in as me.* "Shared" means: *anyone on the team can
-actually switch onto this account* — because the encrypted token is in the
-cloud and every teammate's Mac has the Team Key to unscramble it.
+"Visibility only" means teammates can see how much of the account you've used but
+can't log in as you. "Shared" means anyone on the team can switch onto it, since
+the encrypted token is in the cloud and every teammate's Mac has the Team Key.
 
 ```mermaid
 sequenceDiagram
@@ -161,17 +157,21 @@ This is the important part.
   read your shared tokens, because it doesn't have the key.
 - **Tokens are encrypted before they leave your Mac** (using ChaCha20-Poly1305,
   a modern, strong cipher). The cloud only ever holds scrambled bytes.
-- **Plaintext tokens only exist briefly, in memory, on the Mac that's using
-  them.** They're passed to the Python helper through a private channel — never
-  written to a log, never put in a place other programs could read.
+- **Plaintext tokens exist only briefly, in memory, on the Mac using them.**
+  They reach the Python helper over stdin, never a log file and never a command
+  argument other processes could read.
+- **Machine-local secrets never travel.** Claude Code keeps MCP server logins and
+  plugin secrets in the same file as your account token; the helper strips those
+  out before anything is stored or uploaded, so sharing an account shares only
+  the account.
 - **The cloud enforces team boundaries itself.** Every piece of data is behind
   row-level security rules, so even a leaked read-only cloud key can only ever
   see *your own team's* rows, and only the owner of an account can change how
   it's shared.
 
-Put simply: **a friend can use a shared account, but nobody — not the cloud,
-not a stranger — can read the raw login unless they're on your team and have
-the Team Key.**
+Put simply: **a teammate can use a shared account, but nobody, not the cloud and
+not a stranger, can read the raw login without being on your team and holding the
+Team Key.**
 
 ---
 
@@ -182,15 +182,15 @@ Claude accounts have two rolling limits the app cares about:
 - a **5-hour** window, and
 - a **7-day** window.
 
-The app always looks at whichever one is **tighter** (closer to full) — if your
-7-day is at 82% and your 5-hour at 30%, the app treats that account as "82%
-used," because 82% is what will actually stop you first.
+The app always uses whichever is **tighter**. If your 7-day is at 82% and your
+5-hour at 30%, the account counts as "82% used", because 82% is what stops you
+first.
 
-### The "poll leader" — why adding people doesn't spam the API
+### The poll leader, or why adding people doesn't spam the API
 
-Someone has to actually ask Anthropic "how much has this account used?" But if
-all 10 of you asked, constantly, you'd hammer the usage API and get
-rate-limited. So the team **elects a single poll leader**:
+Someone has to ask Anthropic "how much has this account used?". If all 10 of you
+asked constantly you'd hammer the usage API and get rate-limited, so the team
+**elects a single poll leader**:
 
 ```mermaid
 graph TD
@@ -210,27 +210,32 @@ graph TD
     Cloud -->|"live updates"| M3
 ```
 
-- **Only the leader talks to Anthropic.** Everyone else gets the numbers
-  instantly from the cloud (live updates, no polling).
-- If the leader's app quits or its computer sleeps, **someone else
-  automatically takes over** within about a minute and a half.
-- The leader doesn't poll on a dumb fixed timer — it uses an **adaptive
-  schedule**: it checks a busy account more often, backs off on a quiet one,
-  speeds up when an account is near its limit, and slows down after getting
-  rate-limited. Target: about **one check every 3 minutes per account**, which
-  stays comfortably under Anthropic's limit no matter how many people join.
+- **Only the leader talks to Anthropic.** Everyone else gets the numbers from
+  the cloud as live updates, with no polling.
+- If the leader's app quits or its Mac sleeps, **someone else takes over** within
+  about 90 seconds.
+- The leader uses an **adaptive schedule** rather than a fixed timer: more often
+  for a busy account, backing off on a quiet one, faster near a limit, slower
+  after a rate-limit. It targets about **one check every 3 minutes per account**,
+  which stays under Anthropic's limit no matter how many people join.
 
-> One exception: a **visibility-only** account can only be read by its owner
-> (nobody else has its token), so its usage always comes from the owner's own
+> One exception: a **visibility-only** account can only be read by its owner,
+> since nobody else has its token. Its usage always comes from the owner's own
 > app, whoever the leader happens to be.
 
 ---
 
-## 8. Claims — no two people on the same account at once
+## 8. Reservations (optional)
 
-Before anyone uses a shared account, their app **claims** it — like putting a
-sticky note on it that says "in use." Everyone else sees a *"held by ______"*
-badge and knows to pick a different one.
+By default, **nothing is reserved**: two people can use the same account at the
+same time, which is usually fine.
+
+If you turn on **"Reserve my accounts while I'm using them"** (Settings → Team),
+your app puts a lease on an account you own while you're on it. Everyone else
+sees a *"held by ______"* badge, can't switch to it, and auto-switch steers
+around it. You can only ever reserve accounts **you own**, never a teammate's,
+but an existing reservation is respected by everyone regardless of their own
+setting.
 
 ```mermaid
 graph LR
@@ -240,11 +245,11 @@ graph LR
     A2["You switch away"] --> E["App releases X<br/>immediately"]
 ```
 
-- A claim is a **5-minute lease**, renewed every 60 seconds while you're on it.
-- If your app crashes or your Mac sleeps, the lease simply **expires on its
-  own** — the account frees up automatically, no cleanup needed.
-- When you switch **away** from an account, its claim is **released right away**,
-  so a teammate can grab it immediately.
+- A reservation is a **5-minute lease**, renewed every 60 seconds while you're
+  on it.
+- If your app crashes or your Mac sleeps, the lease **expires on its own** and
+  the account frees up. No cleanup needed.
+- Switching **away** releases it immediately, so a teammate can take it at once.
 
 ---
 
@@ -273,23 +278,21 @@ flowchart TD
 
 The rules in words:
 
-- **Threshold** — the app only considers switching once your active account
-  crosses a usage line you set (**80 / 90 / 95 / 98%**, default **90%**).
-- **Pick the most headroom** — among eligible accounts, it goes to the one with
-  the most room left.
-- **Never poach** — an account another teammate is actively using is *never* a
-  target. Full stop.
-- **Hysteresis (anti-flip-flop)** — a candidate has to be better by a real
-  **margin (10%)**, and switching to it must actually leave you healthy.
-  This stops two accounts hovering at the line from bouncing you back and forth.
-- **Cooldown** — after a switch, it waits **5 minutes** before doing another
-  routine one (an account hitting a hard wall can override this).
-- **Freshen before switching** — if the account you're about to move to has a
-  token expiring in the next 10 minutes, it's refreshed first, so you don't
-  land on a dead login.
-- **Quarantine** — if an account's login is truly broken, it's set aside and
-  skipped. It's **automatically un-quarantined the moment someone logs into that
-  account again** (the app notices the login is genuinely new).
+- **Threshold.** It only considers switching once your active account crosses a
+  line you set: **80 / 90 / 95 / 98%**, default **90%**.
+- **Most headroom wins.** Among eligible accounts it takes the one with the most
+  room left.
+- **Never poach.** An account a teammate has reserved is never a target.
+- **Anti-flip-flop margin.** A candidate must be better by a real **10% margin**
+  and must leave you healthy, so two accounts hovering at the line can't bounce
+  you back and forth.
+- **Cooldown.** After a switch it waits **5 minutes** before another routine one.
+  An account hitting a hard wall overrides this.
+- **Freshen first.** If the account you're moving to has a token expiring within
+  10 minutes, it's refreshed before the switch, so you don't land on a dead
+  login.
+- **Quarantine.** A truly broken login is set aside and skipped, then released
+  **the moment someone logs into that account again**, which the app detects.
 
 You'll get a small notification when the app switches you, quarantines an
 account, or when everything is maxed out.
@@ -299,23 +302,23 @@ account, or when everything is maxed out.
 You're never locked out of driving it yourself:
 
 - **Click any account** in the list to switch to it right now.
-- **"Switch to best account"** — one click, jump to whoever has the most room.
-- **"Rotate to next account"** — cycle to the next one in the list.
+- **"Switch to best account"**: one click, jump to whichever has the most room.
+- **"Rotate to next account"**: cycle to the next one in the list, ignoring usage.
 
-Manual actions ignore the threshold/cooldown — if *you* ask, it just does it.
+Manual actions ignore the threshold and cooldown. If you ask, it just does it.
 
 ---
 
 ## 10. Who used how much (attribution)
 
-Anthropic's usage is measured **per account, not per person**, so the app can't
-directly tell how much *you* personally used a shared account. Instead — only if
-you opt in — it installs a tiny Claude Code hook that logs **one line every time
-you send a prompt** (a timestamp and which account was active — *never* your
-prompt's contents). The **Team usage** window then shows, over the last 7 days,
-how many prompts each person sent and their rough share of the pool.
+Anthropic measures usage **per account, not per person**, so the app can't tell
+directly how much you personally used a shared account. If you opt in, it
+installs a small Claude Code hook that logs **one line per prompt you send**: a
+timestamp and which account was active, never the prompt's contents. The **Team
+usage** pane in Settings then shows, over the last 7 days, how many prompts each
+person sent and their rough share of the pool.
 
-This is **off by default** and turned on with a clearly-labeled toggle.
+**Off by default**, enabled with a clearly labelled toggle.
 
 ---
 
@@ -330,7 +333,7 @@ This is **off by default** and turned on with a clearly-labeled toggle.
 | Auto-switch check interval | every 60 seconds |
 | Reads before declaring "failover" | 3 in a row |
 | Token "about to expire" buffer | 10 minutes |
-| Account claim lease / renewal | 5 min lease, renewed every 60s |
+| Reservation lease / renewal | 5 min lease, renewed every 60s (opt-in) |
 | Poll-leader takeover time | ~90 seconds |
 | Usage-check pace per account | ~1 every 3 minutes (adaptive) |
 
@@ -357,8 +360,8 @@ panel. The cloud side (Supabase database) is described in
 
 ## 13. An honest heads-up
 
-Pooling one Claude subscription across several people and computers cuts against
-Anthropic's consumer terms, and the bigger the group, the more it can look
-unusual to their systems. This app is upfront about that and does **nothing** to
-hide or disguise it — use it with people you trust to accept that together. This
-notice is shown right in the app's sign-in screen too, not buried here.
+Pooling one Claude subscription across several people and computers goes against
+Anthropic's consumer terms, and the bigger the group, the more it stands out to
+their systems. This app is upfront about that and does **nothing** to hide or
+disguise it. Use it with people you trust to accept that together. The same
+notice appears on the app's sign-in screen, not just here.

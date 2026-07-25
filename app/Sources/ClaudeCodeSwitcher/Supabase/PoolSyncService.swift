@@ -3,15 +3,13 @@ import Foundation
 import Supabase
 
 /// Everything that talks to the pool tables directly (accounts, account_tokens, usage_current,
-/// claims) — fetches, pushes, and the claim RPCs. Realtime subscriptions live here too, exposed
-/// as `AsyncStream`s so `AppState` can consume them without knowing anything about
-/// `RealtimeChannelV2`/`AnyAction` itself.
+/// claims): fetches, pushes, and the claim RPCs. Realtime subscriptions live here too, so
+/// `AppState` can consume them without knowing about `RealtimeChannelV2`/`AnyAction`.
 ///
-/// v1 usage-push note: every client that reads an account's usage locally pushes it to
-/// `usage_current` (see `AppState.refreshUsage`). That is deliberately *not* the poll-leader
-/// election BUILD_PLAN.md section 3a describes — this is the honest v1 stepping stone (multiple
-/// online clients can occasionally push the same shared account's usage redundantly), and the
-/// election engine is still Phase 3 work, not silently pretended-done here.
+/// Usage reaches `usage_current` two ways, by design. A client holding local credentials for an
+/// account publishes what it already read (`AppState.refreshUsage`), and the elected poll leader
+/// (`PollLeaderController`) sweeps the accounts nobody is driving. Both write the same row, so an
+/// occasional redundant push is harmless.
 struct PoolSyncService {
     private let client = SupabaseClientProvider.shared
 
@@ -26,9 +24,8 @@ struct PoolSyncService {
         let share_mode: String
     }
 
-    /// Upserts on `(team_id, anthropic_account_uuid)` — the identity dedup BUILD_PLAN.md
-    /// invariant 4 requires. Capturing the same underlying Anthropic account twice (you, then a
-    /// teammate) updates the existing pool row rather than creating a duplicate.
+    /// Upserts on `(team_id, anthropic_account_uuid)`. Capturing the same underlying Anthropic
+    /// account twice, by you then a teammate, updates the existing row rather than duplicating it.
     @discardableResult
     func pushAccount(
         teamId: UUID,
@@ -55,11 +52,9 @@ struct PoolSyncService {
 
     private struct ShareModeUpdate: Encodable { let share_mode: String }
 
-    /// Upgrading/downgrading share mode (BUILD_PLAN.md section 5) — the RLS `accounts_update`
-    /// policy already restricts this to the account's owner, so there's no separate ownership
-    /// check needed here. The caller (`AppState.setShareMode`) handles the token side: pushing a
-    /// fresh ciphertext on upgrade, deleting it on downgrade (`deleteToken` below) — this call is
-    /// just the `accounts` row itself.
+    /// Upgrading or downgrading share mode. The `accounts_update` RLS policy already restricts
+    /// this to the account's owner, so no separate ownership check is needed here. The caller
+    /// handles the token side; this call is just the `accounts` row.
     func updateShareMode(accountId: UUID, shareMode: ShareMode) async throws {
         try await client
             .from("accounts")
@@ -68,9 +63,9 @@ struct PoolSyncService {
             .execute()
     }
 
-    /// Removes an account from the pool entirely (owner-only via the `accounts_delete` RLS
-    /// policy). Cascades its token/usage/claim rows. Distinct from downgrading to
-    /// visibility-only — this forgets the account from the team altogether.
+    /// Removes an account from the pool (owner-only via the `accounts_delete` RLS policy),
+    /// cascading its token, usage and claim rows. Distinct from downgrading to visibility-only:
+    /// this forgets the account from the team altogether.
     func removeAccountFromPool(accountId: UUID) async throws {
         try await client
             .from("accounts")
@@ -105,9 +100,9 @@ struct PoolSyncService {
         let nonce: String
     }
 
-    /// Encrypts `token` with the team key and upserts the v1 (team-key, `recipient_user_id ==
-    /// nil`) row. Never called for `.visibilityOnly` accounts — the caller checks that first, so
-    /// a token for a visibility-only account is never even read out of local storage.
+    /// Encrypts `token` with the team key and upserts the team-key row (`recipient_user_id` nil).
+    /// Never called for `.visibilityOnly` accounts: the caller checks first, so such a token is
+    /// never even read out of local storage.
     func pushToken(accountId: UUID, plaintextToken: String, teamKey: SymmetricKey) async throws {
         let (ciphertext, nonce) = try TeamCrypto.encrypt(plaintextToken, key: teamKey)
         let payload = NewAccountToken(
@@ -119,7 +114,7 @@ struct PoolSyncService {
             .execute()
     }
 
-    /// The v1 team-key row for an account, or nil for a visibility-only account (no row exists).
+    /// The team-key row for an account, or nil for a visibility-only account, which has no row.
     func fetchTeamKeyToken(accountId: UUID) async throws -> AccountToken? {
         let rows: [AccountToken] = try await client
             .from("account_tokens")
@@ -131,9 +126,8 @@ struct PoolSyncService {
         return rows.first
     }
 
-    /// Downgrading to visibility-only (BUILD_PLAN.md section 5) deletes the ciphertext outright
-    /// rather than leaving an unused row — a visibility-only account should have zero token rows
-    /// in Supabase, same as one that was never shared in the first place.
+    /// Downgrading to visibility-only deletes the ciphertext rather than leaving an unused row: a
+    /// visibility-only account should have zero token rows, same as one never shared at all.
     func deleteToken(accountId: UUID) async throws {
         try await client
             .from("account_tokens")
@@ -194,15 +188,14 @@ struct PoolSyncService {
             .value
     }
 
-    /// Nil means someone else holds a live lease — the caller falls back to the next-best
-    /// candidate (BUILD_PLAN.md section 5's "Switch account" flow) rather than treating it as an error.
+    /// Nil means someone else holds a live lease; the caller falls back to the next-best candidate
+    /// rather than treating it as an error.
     ///
-    /// `claim_account` is declared `RETURNS claims` (a single composite row, nullable when the
-    /// lease is held by someone else), so PostgREST returns a single JSON object or `null` — NOT
-    /// an array. Decoding into `[ClaimRow]` threw "data couldn't be read" on every call, which
-    /// silently aborted the switch *after* the server-side claim had already been taken, leaving
-    /// orphaned claims and making switching appear completely broken. `.single()` can't be used
-    /// here (it errors on the legitimate null-lease case), so decode straight into `ClaimRow?`.
+    /// `claim_account` is declared `RETURNS claims`: a single composite row, nullable when someone
+    /// else holds the lease, so PostgREST returns one JSON object or `null`, never an array.
+    /// Decoding into `[ClaimRow]` fails on every call, which aborts the switch *after* the
+    /// server-side claim was already taken and leaves orphaned claims. `.single()` can't be used
+    /// either, since it errors on the legitimate null-lease case. Decode into `ClaimRow?`.
     func claim(accountId: UUID, purpose: String = "active_use") async throws -> ClaimRow? {
         try await client
             .rpc("claim_account", params: ClaimAccountParams(p_account: accountId, p_purpose: purpose))
@@ -216,22 +209,21 @@ struct PoolSyncService {
             .execute()
     }
 
-    /// Called on a repeating timer while a claim is held (BUILD_PLAN.md section 5) — extends the
-    /// 5-minute lease so an account genuinely still in use doesn't silently free itself and show
-    /// as available to a teammate mid-session.
+    /// Called on a repeating timer while a claim is held. Extends the 5-minute lease so an account
+    /// still in use doesn't free itself and show as available to a teammate mid-session.
     func heartbeatClaim(accountId: UUID) async throws {
         try await client
             .rpc("heartbeat_claim", params: HeartbeatClaimParams(p_account: accountId))
             .execute()
     }
 
-    // MARK: - Poll-leader election (BUILD_PLAN.md section 3a)
+    // MARK: - Poll-leader election
 
-    /// Nil means another client already holds a live leader lease — the caller stays a
-    /// follower and relies on Realtime for `usage_current` updates instead of polling itself.
+    /// Nil means another client holds a live leader lease; the caller stays a follower and relies
+    /// on Realtime for `usage_current` updates instead of polling itself.
     ///
-    /// Same single-composite/`RETURNS poll_leader` shape as `claim` above — decode into a single
-    /// optional, never an array, or the response fails to decode (see `claim`'s header comment).
+    /// Same `RETURNS poll_leader` single-composite shape as `claim` above, so decode into a single
+    /// optional rather than an array.
     func tryBecomePollLeader(teamId: UUID) async throws -> PollLeaderRow? {
         try await client
             .rpc("try_become_poll_leader", params: TeamIdParam(p_team: teamId))
@@ -260,13 +252,12 @@ struct PoolSyncService {
             .value
     }
 
-    // MARK: - Attribution (BUILD_PLAN.md section 8)
+    // MARK: - Attribution
 
-    /// Turn rows are written by the hook script directly (via the `log_turn` RPC over `curl`, not
-    /// through this Swift client — see `AttributionHookService`'s header comment for why); this is
-    /// only the read side, for `TeamUsageView`'s digest. `since` bounds the window client-side
-    /// rather than the server aggregating, since a team of up to ~10 people's weekly turn volume
-    /// is small enough that fetching raw rows and counting in Swift is simpler than a second RPC.
+    /// Turn rows are written by the hook script over `curl`, not through this client, so this is
+    /// only the read side for `TeamUsageView`'s digest. Counting happens in Swift rather than via
+    /// a server-side aggregate because a ~10-person team's weekly volume is small enough that
+    /// fetching raw rows is simpler than a second RPC.
     func fetchTurnLog(teamId: UUID, since: Date) async throws -> [TurnLogRow] {
         try await client
             .from("turn_log")
@@ -285,20 +276,18 @@ struct PoolSyncService {
         let reason: String
     }
 
-    /// Plain insert, not an RPC — `switch_log` is an append-only audit row with a policy-level
-    /// check (`user_id = auth.uid()`), not a lease, so there's no race to make atomic (see
-    /// `0005_attribution.sql`'s header comment).
+    /// Plain insert, not an RPC: `switch_log` is an append-only audit row with a policy-level
+    /// check (`user_id = auth.uid()`), not a lease, so there's no race to make atomic.
     func logSwitch(teamId: UUID, userId: UUID, from: UUID?, to: UUID?, reason: String) async throws {
         let payload = NewSwitchLog(team_id: teamId, user_id: userId, account_from: from, account_to: to, reason: reason)
         try await client.from("switch_log").insert(payload).execute()
     }
 
-    // MARK: - Re-login requests (0004_reauth_requests.sql)
+    // MARK: - Re-login requests
 
-    /// Flags a (usually shared) account as needing re-login and records who asked — any team
-    /// member, not just the owner, since whoever hits the failure is often not the account's
-    /// owner. Sets `accounts.status = 'quarantined'`, visible to everyone over the existing
-    /// `accounts` Realtime subscription.
+    /// Flags an account as needing re-login and records who asked. Open to any team member, not
+    /// just the owner, since whoever hits the failure usually isn't the owner. Sets
+    /// `accounts.status = 'quarantined'`, visible to everyone over the `accounts` subscription.
     @discardableResult
     func requestReauth(accountId: UUID) async throws -> ReauthRequest {
         try await client
@@ -308,8 +297,8 @@ struct PoolSyncService {
             .value
     }
 
-    /// Owner-only — flips the account back to `active`. Called automatically by `AppState` once a
-    /// post-re-login usage read actually succeeds, not from a manual "mark resolved" button.
+    /// Owner-only; flips the account back to `active`. Called automatically once a post-re-login
+    /// usage read succeeds, not from a manual "mark resolved" button.
     func clearAccountReauth(accountId: UUID) async throws {
         try await client
             .rpc("clear_account_reauth", params: ReleaseClaimParams(p_account: accountId))
@@ -318,9 +307,8 @@ struct PoolSyncService {
 
     // MARK: - Realtime
 
-    /// One `AnyAction` stream per table, decoded to the caller's model type. The caller is
-    /// expected to `for await` each stream in its own `Task` and apply updates on the main actor
-    /// — see `AppState.startPoolRealtime()`.
+    /// One `AnyAction` stream per table, decoded to the caller's model type. The caller `for
+    /// await`s each stream in its own `Task` and applies updates on the main actor.
     func subscribeChanges<T: Decodable>(
         table: String,
         as type: T.Type,
@@ -342,8 +330,8 @@ struct PoolSyncService {
                     onChange(record)
                 }
             case .delete:
-                break  // deletes are rare here (removal goes through explicit app actions,
-                       // which already update local state directly) — not worth a second callback shape
+                break  // removal goes through explicit app actions that already update local
+                       // state, so there's nothing a second callback shape would add here
             }
         }
     }

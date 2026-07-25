@@ -1,26 +1,32 @@
 import SwiftUI
 
-/// One account card in the panel's list, rendering a merged `DisplayAccount` — local-only, pool
-/// visibility-only, or pool shared, each with a slightly different affordance (see
-/// `isActivatableHere` / the claimed-by badge below).
+/// One account card in the panel's list, rendering a merged `DisplayAccount`: local-only, pool
+/// visibility-only, or pool shared, each with a slightly different affordance.
 struct AccountRowView: View {
     let account: DisplayAccount
     let isActive: Bool
     let isOwner: Bool
+    /// Whether a team is wired up at all. In offline mode every account is local by definition, so
+    /// the "local only" badge would be noise on every row rather than a distinction.
+    let isPoolConfigured: Bool
     let onSwitch: () -> Void
     let onRemove: () -> Void
     let onSetShareMode: (ShareMode) -> Void
+    let onAddToPool: (ShareMode) -> Void
+    let onDemoteToLocalOnly: () -> Void
     let onRequestReauth: () -> Void
+
+    /// An account this Mac holds that has no pool row: real state, not an absence. Worth its own
+    /// badge, since it was previously signalled only by the *lack* of a shared/visibility icon.
+    private var isLocalOnly: Bool { isPoolConfigured && account.poolAccount == nil && account.isLocallyKnown }
 
     @State private var isHovering = false
 
     var body: some View {
-        // NOTE: the trash button used to be nested *inside* the switch Button's label — SwiftUI
-        // doesn't reliably route taps to an inner Button when it's inside another Button's hit
-        // area, so clicking it did nothing (the outer button's gesture recognizer wins). Fixed by
-        // making them siblings in the same HStack instead of one nested in the other; the switch
-        // button's own `.contentShape(Rectangle())` keeps the full-row-click-to-switch behavior
-        // (including the trailing Spacer's empty space) working exactly as before.
+        // The trash button must stay a sibling of the switch button, not nested inside its label:
+        // SwiftUI doesn't reliably route taps to an inner Button inside another Button's hit area,
+        // so nesting made it dead. The switch button's own `.contentShape(Rectangle())` is what
+        // keeps click-anywhere-on-the-row-to-switch working.
         HStack(spacing: 10) {
             Button(action: onSwitch) {
                 HStack(spacing: 10) {
@@ -52,7 +58,7 @@ struct AccountRowView: View {
                         }
 
                         if account.poolAccount?.status == .quarantined {
-                            Text(isOwner ? "needs re-login" : "needs re-login — right-click to notify the owner")
+                            Text(isOwner ? "needs re-login" : "needs re-login (right-click to notify the owner)")
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(Theme.crit)
                         } else if let claimedByName = account.claimedByName {
@@ -60,7 +66,11 @@ struct AccountRowView: View {
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(Theme.warn)
                         } else if !account.isActivatableHere {
-                            Text("visibility-only — owner must switch to it")
+                            Text("visibility only, owner must switch to it")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.textDim)
+                        } else if isLocalOnly {
+                            Text("this Mac only, not in the pool")
                                 .font(.system(size: 10))
                                 .foregroundStyle(Theme.textDim)
                         }
@@ -91,14 +101,26 @@ struct AccountRowView: View {
         .opacity(account.isActivatableHere ? 1.0 : 0.6)
         .onHover { isHovering = $0 }
         .contextMenu {
-            if isOwner, let poolAccount = account.poolAccount {
+            if isLocalOnly {
+                // Without these the menu was empty for a local-only account, and `setShareMode`
+                // silently no-ops on one, so the choice made in the add dialog could never be
+                // revisited.
+                Button("Share with team") { onAddToPool(.shared) }
+                Button("Add as visibility only") { onAddToPool(.visibilityOnly) }
+            } else if isOwner, let poolAccount = account.poolAccount {
                 Button("Share with team") { onSetShareMode(.shared) }
                     .disabled(poolAccount.shareMode == .shared)
                 Button("Visibility only") { onSetShareMode(.visibilityOnly) }
                     .disabled(poolAccount.shareMode == .visibilityOnly)
+                // Only offered where a local copy exists to fall back to; otherwise leaving the
+                // pool would mean losing the account rather than demoting it.
+                if account.isLocallyKnown {
+                    Divider()
+                    Button("Take out of pool, keep on this Mac") { onDemoteToLocalOnly() }
+                }
             } else if !isOwner, account.poolAccount != nil {
-                // Not gated on already being quarantined — the person noticing a problem is
-                // often ahead of the app's own diagnosis (see AppState.requestReauth).
+                // Not gated on already being quarantined: the person noticing a problem is often
+                // ahead of the app's own diagnosis (see AppState.requestReauth).
                 Button("Request re-login…", action: onRequestReauth)
             }
         }
@@ -110,6 +132,14 @@ struct AccountRowView: View {
             Image(systemName: mode == .shared ? "lock.open" : "eye")
                 .font(.system(size: 9))
                 .foregroundStyle(Theme.textDim)
+                .help(mode == .shared
+                      ? "Shared with the team. Teammates can switch to it."
+                      : "Visible to the team, but the login stays on this Mac.")
+        } else if isLocalOnly {
+            Image(systemName: "laptopcomputer")
+                .font(.system(size: 9))
+                .foregroundStyle(Theme.textDim)
+                .help("On this Mac only. Not in the team pool, and teammates can't see it. Right-click to add it.")
         }
     }
 }

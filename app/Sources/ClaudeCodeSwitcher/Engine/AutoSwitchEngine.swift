@@ -2,8 +2,8 @@ import CryptoKit
 import Foundation
 
 /// User-configurable auto-switch policy. Defaults match claude-swap's `AutoSwitchSettings`
-/// exactly (`settings.py`) — they're the product of real-world tuning against the usage API's
-/// actual rate-limit shape, not arbitrary starting points.
+/// exactly: the product of real tuning against the usage API's rate-limit shape, not arbitrary
+/// starting points.
 struct AutoSwitchSettings: Codable, Equatable {
     var enabled: Bool = false
     var threshold: Double = 90.0
@@ -14,10 +14,9 @@ struct AutoSwitchSettings: Codable, Equatable {
 
     private static let defaultsKey = "com.claudecodeswitcher.autoSwitchSettings"
 
-    /// UserDefaults rather than a settings.json file (claude-swap's approach) — a deliberate v1
-    /// simplification since this app has exactly one settings surface (this panel) instead of
-    /// claude-swap's CLI+TUI+menubar needing to agree on one file. Revisit if a second surface
-    /// (e.g. a `cswap`-equivalent CLI) ever needs to share these.
+    /// UserDefaults rather than claude-swap's settings.json, because this app has one settings
+    /// surface instead of a CLI, TUI and menu bar needing to agree on a file. Revisit if a second
+    /// surface ever needs to share these.
     static func loadFromDefaults() -> AutoSwitchSettings {
         guard let data = UserDefaults.standard.data(forKey: defaultsKey),
               let settings = try? JSONDecoder().decode(AutoSwitchSettings.self, from: data)
@@ -40,17 +39,16 @@ enum AutoSwitchEvent {
     case error(String)
 }
 
-/// The auto-switch decision engine — a claim-aware port of claude-swap's `autoswitch.py`
-/// `_tick_inner`/`_perform`/`_freshen_target` (MIT). Ported logic, not reinvented: the trigger
-/// classification (proactive / at-limit / failover), hysteresis gate, cooldown, and
-/// freshen-before-activate sequencing all mirror the source directly — see inline comments at
-/// each point they do. The one genuinely new axis is claim-awareness: a candidate held by another
-/// team member is never selected, which claude-swap's single-user engine has no concept of.
+/// The auto-switch decision engine: a claim-aware port of claude-swap's `autoswitch.py`
+/// `_tick_inner`/`_perform`/`_freshen_target` (MIT). Ported, not reinvented. Trigger
+/// classification (proactive, at-limit, failover), the hysteresis gate, cooldown, and
+/// freshen-before-activate sequencing all mirror the source. The new axis is claim-awareness: a
+/// candidate held by another team member is never selected, which a single-user engine has no
+/// concept of.
 ///
-/// Reads its input entirely from `AppState`'s already-cached `usageByAccount`/`displayAccounts`
-/// (kept warm by each client's own refresh cycle plus Realtime) rather than fetching anything
-/// itself — this engine spends zero extra Anthropic API budget beyond what was already being
-/// spent; see `PollLeaderController` for where the API calls actually happen.
+/// Reads its input entirely from `AppState`'s cached `usageByAccount`/`displayAccounts`, kept warm
+/// by each client's refresh cycle plus Realtime, rather than fetching anything itself. So this
+/// engine spends no extra Anthropic API budget; `PollLeaderController` is where calls happen.
 @MainActor
 final class AutoSwitchEngine {
     private let bridge: CoreBridge
@@ -62,17 +60,16 @@ final class AutoSwitchEngine {
     private var myUserId: UUID?
     private var teamId: UUID?
 
-    /// Disk-persisted (`QuarantineStore`) — survives app relaunch and auto-releases on a real
-    /// re-login via refresh-token fingerprint comparison, see `releaseRecovered()`.
+    /// Persisted via `QuarantineStore`, so it survives relaunch and auto-releases on a real
+    /// re-login via refresh-token fingerprint comparison. See `releaseRecovered()`.
     private var quarantine: [String: QuarantineEntry]
     private var unhealthyTicks = 0
     private var lastSwitchAt: Date?
     private var tickTask: Task<Void, Never>?
 
-    /// In-memory only (not disk-persisted like quarantine): a relaunch clearing this is fine,
-    /// since the risk it guards against is rapid *repeated* attempts within one running session,
-    /// not something that needs to survive a restart. See `tryActivate`'s freshen step for why
-    /// this exists — the actual fix for a real incident, not defensive speculation.
+    /// In-memory only, unlike quarantine. A relaunch clearing this is fine: it guards against
+    /// rapid repeated attempts within one session, which is not something that needs to survive a
+    /// restart. See `tryActivate`'s freshen step for why it exists.
     private var lastFreshenAttempt: [String: Date] = [:]
     private let freshenCooldownS: TimeInterval = 120
 
@@ -89,8 +86,12 @@ final class AutoSwitchEngine {
         self.teamKey = teamKey
         self.myUserId = myUserId
         self.teamId = teamId
-        guard settings.enabled else { return }
+        // Cancel before the enabled check, not after. Starting with auto-switch off has to tear
+        // down any loop still running from a previous configuration (a team switch, say) rather
+        // than leaving it spinning against the new team's credentials for the app's lifetime.
         tickTask?.cancel()
+        tickTask = nil
+        guard settings.enabled else { return }
         tickTask = Task { [weak self] in
             while let self, !Task.isCancelled {
                 await self.tick()
@@ -119,16 +120,15 @@ final class AutoSwitchEngine {
 
     private func tick() async {
         guard settings.enabled, let active = state.activeAccount else { return }
-        // Shares AppState's switch mutex with manual row clicks and the quick-switch buttons —
-        // without this, the automatic engine could race a manual switch the same way rapid clicks
-        // used to race each other (see AppState.switchTo's header comment for the concrete bug).
+        // Shares AppState's switch mutex with manual row clicks and the quick-switch buttons.
+        // Without it, the automatic engine can race a manual switch.
         guard state.beginSwitching() else { return }
         defer { state.endSwitching() }
         await releaseRecovered()
 
         guard let activePct = state.usageByAccount[active.accountUuid]?.tightestPct else {
-            // Active usage unreadable — count toward failover rather than acting immediately;
-            // a transient read blip shouldn't itself trigger a switch.
+            // Active usage unreadable: count toward failover rather than acting immediately, so a
+            // transient read blip can't itself trigger a switch.
             unhealthyTicks += 1
             if unhealthyTicks < settings.unhealthyTicks {
                 onEvent?(.blocked(reason: "active usage unknown (\(unhealthyTicks)/\(settings.unhealthyTicks) before failover)"))
@@ -164,12 +164,12 @@ final class AutoSwitchEngine {
             guard let pct = candidate.usage?.tightestPct else { continue }
             anyKnown = true
             let headroom = 100.0 - pct
-            if headroom <= 0 { continue }  // itself at its limit — never a target
+            if headroom <= 0 { continue }  // at its own limit, never a target
             if trigger == "proactive", let activeHeadroom {
-                // Hysteresis: the candidate must land healthy (below threshold) and beat the
-                // active account by the full margin, so two accounts hovering at the line can't
-                // ping-pong. at-limit/failover skip this gate — anything with headroom beats a
-                // blocked or dead account.
+                // Hysteresis: the candidate must land below the threshold and beat the active
+                // account by the full margin, so two accounts hovering at the line can't
+                // ping-pong. at-limit and failover skip this gate, since anything with headroom
+                // beats a blocked or dead account.
                 if pct >= settings.threshold { continue }
                 if headroom - activeHeadroom < settings.hysteresisPct { continue }
             }
@@ -194,11 +194,10 @@ final class AutoSwitchEngine {
         await activateFirstViable(ordered, trigger: trigger)
     }
 
-    /// Candidate filter shared by the automatic tick path and the manual quick-switch actions:
-    /// quarantine-aware, and always claim-aware — a live reservation is honored regardless of
-    /// *this* device's own reservation preference, since a claim only ever exists because the
-    /// account's owner reserved it (see `tryActivate`'s claim call below). Reservation creation is
-    /// opt-in and owner-only; respecting one that already exists is not optional.
+    /// Candidate filter shared by the automatic tick and the manual quick-switch actions:
+    /// quarantine-aware, and always claim-aware. A live reservation is honored regardless of this
+    /// device's own preference, since a claim only exists because the account's owner made it.
+    /// Creating a reservation is opt-in and owner-only; respecting an existing one is not.
     private func eligibleManualCandidates(excluding activeUuid: String?) -> [DisplayAccount] {
         state.displayAccounts.filter { account in
             account.accountUuid != activeUuid
@@ -208,10 +207,9 @@ final class AutoSwitchEngine {
         }
     }
 
-    /// Tries each candidate in order until one activates; on success this is also where
-    /// `lastSwitchAt`/cooldown timing gets set and both local + pool state get refreshed. Shared
-    /// by the automatic tick path and the manual quick-switch buttons — identical activation
-    /// mechanics either way, only how `ordered` got built differs.
+    /// Tries each candidate in order until one activates. On success this is also where
+    /// `lastSwitchAt` (cooldown timing) is set and local plus pool state get refreshed. Shared by
+    /// the automatic tick and the quick-switch buttons; only how `ordered` was built differs.
     @discardableResult
     private func activateFirstViable(_ ordered: [DisplayAccount], trigger: String) async -> AutoSwitchEvent {
         for candidate in ordered {
@@ -219,15 +217,15 @@ final class AutoSwitchEngine {
             switch await tryActivate(candidate) {
             case .switched:
                 lastSwitchAt = Date()
-                // Give up whatever we held (a no-op if we never claimed anything). Unconditional,
-                // not toggle-gated — see AppState.switchTo's matching release for why.
+                // Give up whatever we held; a no-op if we never claimed anything. Unconditional,
+                // matching AppState.switchTo's release.
                 if let previousPoolAccountId = previousAccountUuid.flatMap({ state.poolAccountsByUuid[$0]?.id }),
                    previousPoolAccountId != candidate.poolAccount?.id {
                     try? await poolSync.releaseClaim(accountId: previousPoolAccountId)
                 }
-                // Only adopt a reservation on the new account if it's ours to reserve and we've
-                // opted in — the claim itself was only taken under that same condition, in
-                // tryActivate below, so this just keeps AppState's heartbeat in sync with it.
+                // Adopt a reservation on the new account only if it's ours to reserve and we opted
+                // in, the same condition tryActivate took the claim under. This just keeps
+                // AppState's heartbeat in sync with it.
                 if state.reserveAccountsWhileInUse, let poolAccount = candidate.poolAccount, poolAccount.ownerUserId == myUserId {
                     state.adoptClaim(accountId: poolAccount.id)
                 }
@@ -252,9 +250,8 @@ final class AutoSwitchEngine {
         return event
     }
 
-    /// Best-effort audit row (`switch_log`, same table `AppState.switchTo` writes to for manual
-    /// switches) — maps this engine's finer-grained trigger strings down to the table's
-    /// check-constrained reason values.
+    /// Best-effort audit row in `switch_log`, the same table `AppState.switchTo` writes for manual
+    /// switches. Maps this engine's finer-grained triggers onto the table's constrained reasons.
     private func logSwitch(from: String?, to: String?, trigger: String) async {
         guard let teamId, let myUserId else { return }
         let reason: String
@@ -271,9 +268,9 @@ final class AutoSwitchEngine {
 
     // MARK: - Manual "switch now" actions (quick-switch buttons)
 
-    /// One-click "switch to best" — the same claim-aware, quarantine-aware scoring the automatic
-    /// engine uses, but invoked directly by the user rather than gated by
-    /// threshold/hysteresis/cooldown: an explicit request overrides all of that by design.
+    /// One-click "switch to best": the same claim- and quarantine-aware scoring the automatic
+    /// engine uses, but not gated by threshold, hysteresis or cooldown, since an explicit request
+    /// overrides all of that by design.
     @discardableResult
     func switchToBest() async -> AutoSwitchEvent {
         await releaseRecovered()
@@ -289,9 +286,9 @@ final class AutoSwitchEngine {
         return await activateFirstViable(ordered, trigger: "manual-best")
     }
 
-    /// One-click "rotate" — moves to the next eligible account after the active one, in the same
-    /// email-sorted order the panel displays, wrapping around. Ignores usage entirely by design:
-    /// this is a manual round-robin, not a usage decision.
+    /// One-click "rotate": moves to the next eligible account after the active one, in the same
+    /// email-sorted order the panel shows, wrapping around. Ignores usage by design, since this is
+    /// a manual round-robin rather than a usage decision.
     @discardableResult
     func rotate() async -> AutoSwitchEvent {
         await releaseRecovered()
@@ -309,17 +306,15 @@ final class AutoSwitchEngine {
         return await activateFirstViable(ordered, trigger: "manual-rotate")
     }
 
-    /// Claude-swap's actual re-login detection (`_release_recovered_quarantines`): compare the
-    /// refresh-token fingerprint now on disk for a quarantined account against the one captured
-    /// at quarantine time. A changed fingerprint means someone logged that account in again since
-    /// — release it. Cheap: only touches locally-known accounts (a shared/visibility-only account
-    /// nobody has activated on this device has no local token to re-check here, and stays
-    /// quarantined until a client that does hold it releases it).
+    /// Claude-swap's re-login detection (`_release_recovered_quarantines`): compare the
+    /// refresh-token fingerprint now on disk for a quarantined account against the one captured at
+    /// quarantine time. A changed fingerprint means someone logged that account in again, so
+    /// release it. Only touches locally-known accounts; one nobody has activated on this device
+    /// has no local token to check and stays quarantined until a client holding it releases it.
     ///
-    /// Internal (not private): `AppState.refresh()` calls this directly on every refresh, not just
-    /// while this engine's own tick loop is running — quarantine recovery has to work regardless
-    /// of whether auto-switch itself is enabled, since "log back into your account and it's
-    /// detected automatically" shouldn't have a hidden dependency on an unrelated toggle.
+    /// Internal, not private: `AppState.refresh()` calls this on every refresh, not just while
+    /// this engine's tick loop runs. Recovery has to work whether or not auto-switch is enabled,
+    /// since "log back in and it's detected" shouldn't depend on an unrelated toggle.
     func releaseRecovered() async {
         guard !quarantine.isEmpty else { return }
         var changed = false
@@ -358,33 +353,30 @@ final class AutoSwitchEngine {
             }
             token = plaintext
         } else {
-            return .skip  // visibility-only, not locally known — nothing this device can activate
+            return .skip  // visibility-only and not locally known, so nothing to activate
         }
 
-        // Freshen: ensure the token outlives Claude Code's own 5-minute refresh buffer before
-        // it gets activated, same 10-minute margin claude-swap's FRESHEN_BUFFER_MS uses.
+        // Freshen: make sure the token outlives Claude Code's own 5-minute refresh buffer before
+        // activation, using the same 10-minute margin as claude-swap's FRESHEN_BUFFER_MS.
         //
-        // A second guard beyond the buffer itself: never freshen the same account twice within
-        // freshenCooldownS, regardless of what isNearExpiry says. This is the actual fix for the
-        // incident where two real accounts got permanently logged out — a refresh_token is
-        // typically single-use, so back-to-back freshen attempts on the same account (rapid
-        // clicking, or an unlucky overlap between this device and another) raced each other, and
-        // the loser's copy of the refresh_token was already spent. The cooldown makes that
-        // physically impossible from this engine's own side, independent of the mutex in
-        // AppState.switchTo (which only serializes *this* device's switches, not a race against
-        // another device or process also holding a copy of the same shared account's token).
+        // A second guard beyond the buffer: never freshen the same account twice within
+        // freshenCooldownS, whatever isNearExpiry says. A refresh_token is typically single-use,
+        // so back-to-back freshen attempts on one account (rapid clicking, or an overlap between
+        // this device and another) race, and the loser's copy is already spent. That is how two
+        // real accounts got permanently logged out. The cooldown makes it impossible from this
+        // engine's side, independently of AppState.switchTo's mutex, which serializes only this
+        // device's switches and not a race against another device holding the same token.
         if isNearExpiry(token) {
             let now = Date()
             if let last = lastFreshenAttempt[candidate.accountUuid], now.timeIntervalSince(last) < freshenCooldownS {
-                return .skip  // freshened moments ago (by us or a race) — don't pile on
+                return .skip  // freshened moments ago, by us or a race; don't pile on
             }
             lastFreshenAttempt[candidate.accountUuid] = now
             do {
                 let refreshed = try await bridge.refreshToken(token)
                 token = refreshed.token
-                // Persisted immediately, before activation is even attempted — see
-                // CoreBridge.saveCredentials's header comment for exactly why this ordering is
-                // the fix: a failed activate right after must never discard the only valid copy.
+                // Persisted before activation is attempted. See CoreBridge.saveCredentials: a
+                // failed activate must never discard the only valid copy.
                 try? await bridge.saveCredentials(accountUuid: candidate.accountUuid, token: token)
                 if let poolAccount = candidate.poolAccount, let teamKey {
                     try? await poolSync.pushToken(accountId: poolAccount.id, plaintextToken: token, teamKey: teamKey)
@@ -392,15 +384,14 @@ final class AutoSwitchEngine {
             } catch let error as CoreBridgeError where error.code == "invalid_grant" {
                 return .quarantine(reason: "invalid_grant", fingerprint: QuarantineStore.fingerprint(ofCredentialJSON: token))
             } catch {
-                return .skip  // transient — try the next candidate this tick, retry this one next tick
+                return .skip  // transient: try the next candidate now, retry this one next tick
             }
         }
 
-        // Claim before activating — only when reservations are on (off by default) and only for a
-        // pool account we actually own; this engine never reserves a teammate's account on their
-        // behalf. `eligibleManualCandidates` already filtered out anything someone else has
-        // reserved, so a failed claim here would only mean a same-owner race across that owner's
-        // own devices — skip to the next candidate either way.
+        // Claim before activating, only when reservations are on (off by default) and only for a
+        // pool account we own. This engine never reserves a teammate's account for them.
+        // `eligibleManualCandidates` already filtered out anything someone else reserved, so a
+        // failed claim here means a race across the owner's own devices. Skip either way.
         if state.reserveAccountsWhileInUse, let poolAccount = candidate.poolAccount, poolAccount.ownerUserId == myUserId {
             guard (try? await poolSync.claim(accountId: poolAccount.id)) != nil else { return .skip }
         }

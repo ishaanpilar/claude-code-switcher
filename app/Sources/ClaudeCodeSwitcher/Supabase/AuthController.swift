@@ -1,12 +1,9 @@
 import Foundation
 import Supabase
 
-/// Sign-in via a 6-digit email code rather than a magic-link deep link. A menu bar app has no
-/// registered URL scheme / web redirect target yet, so a clickable email link would need
-/// `CFBundleURLTypes` + `onOpenURL` plumbing this app doesn't have; Supabase's OTP email supports
-/// typing the code back in regardless of which the email template sends, so this sidesteps that
-/// entirely for v1. Revisit if a magic-link deep link is wanted later — it's an additive change,
-/// not a rewrite of this flow.
+/// Sign-in via a 6-digit email code rather than a magic link. Supabase's OTP email supports
+/// typing the code back in regardless of what the template sends, which avoids depending on deep
+/// linking for the primary path. Adding a magic link later is additive, not a rewrite.
 @MainActor
 final class AuthController: ObservableObject {
     enum State: Equatable {
@@ -18,25 +15,18 @@ final class AuthController: ObservableObject {
 
     @Published private(set) var state: State = .checking
     @Published var lastError: String?
-    /// The current session's access token — only needed outside this class for the attribution
-    /// hook's local session-state file (`AttributionHookService`), which the hook script reads to
-    /// call the `log_turn` RPC as this user. Kept as its own published field rather than folded
-    /// into `State` so a token refresh (same user, new token) doesn't ripple through every
-    /// `Equatable` comparison of `state` elsewhere in the app.
+    /// The current session's access token. Needed outside this class only for the attribution
+    /// hook's session file, which the hook script reads to call `log_turn` as this user. Published
+    /// separately rather than folded into `State` so a token refresh (same user, new token)
+    /// doesn't ripple through every `Equatable` comparison of `state`.
     @Published private(set) var accessToken: String?
 
     private let client = SupabaseClientProvider.shared
     private var listenTask: Task<Void, Never>?
 
-    var currentUserId: UUID? {
-        if case .signedIn(let id, _) = state { return id }
-        return nil
-    }
-
-    /// `@StateObject`-lifetime start, same rationale as `AppState.init`'s call to `start()` — this
-    /// must run exactly once for the app's lifetime, and `authStateChanges` always emits an
-    /// `.initialSession` immediately so `state` resolves out of `.checking` on the very first
-    /// iteration even with no prior session.
+    /// Runs once per app lifetime, same rationale as `AppState.init`'s call to `start()`.
+    /// `authStateChanges` emits `.initialSession` immediately, so `state` resolves out of
+    /// `.checking` on the first iteration even with no prior session.
     func start() {
         listenTask?.cancel()
         listenTask = Task { [weak self] in
@@ -61,7 +51,7 @@ final class AuthController: ObservableObject {
             state = .signedOut
             accessToken = nil
         case .passwordRecovery:
-            break  // not used — no password auth in this app
+            break  // unused: no password auth in this app
         }
     }
 
@@ -79,8 +69,8 @@ final class AuthController: ObservableObject {
         lastError = nil
         do {
             // The resulting session arrives via the authStateChanges listener (a `.signedIn`
-            // event), so `state` doesn't need to be set here directly — one path for "we're
-            // signed in" instead of two that could disagree.
+            // event), so `state` isn't set here: one path for "we're signed in" instead of two
+            // that could disagree.
             try await client.auth.verifyOTP(email: email, token: code, type: .email)
         } catch {
             lastError = error.localizedDescription

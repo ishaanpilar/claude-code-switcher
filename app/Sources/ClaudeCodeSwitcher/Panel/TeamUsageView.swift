@@ -1,11 +1,9 @@
 import Charts
 import SwiftUI
 
-/// Per-user weekly digest (BUILD_PLAN.md section 8): turn count, estimated % of pool consumed,
-/// top accounts. Turn counts are a far better proxy for "who used how much" than claim wall-clock
-/// time — a heavy multi-file edit costs more than a one-line question, but neither the Anthropic
-/// usage API (which is per-account, never per-user) nor claim duration captures that; turn count
-/// at least tracks real interaction volume.
+/// Per-user weekly digest: prompt count, share of the pool, top accounts. Prompt counts are a
+/// better proxy for "who used how much" than claim wall-clock time. Neither the Anthropic usage
+/// API (per-account, never per-user) nor claim duration captures real interaction volume.
 @MainActor
 final class TeamUsageStats: ObservableObject {
     struct TopAccount: Identifiable {
@@ -29,10 +27,9 @@ final class TeamUsageStats: ObservableObject {
 
     private let poolSync = PoolSyncService()
 
-    /// `accountsById` keys pool accounts by their Supabase row id (`turn_log.account_id`'s
-    /// target) — a different key than everywhere else in the app uses (`anthropicAccountUuid`),
-    /// so the caller builds it fresh from `AppState.poolAccountsByUuid` rather than this class
-    /// reaching into AppState itself.
+    /// `accountsById` keys pool accounts by Supabase row id, which is what `turn_log.account_id`
+    /// points at. That's a different key from the `anthropicAccountUuid` used everywhere else, so
+    /// the caller builds it fresh rather than this class reaching into AppState.
     func load(teamId: UUID, membersById: [UUID: Member], accountsById: [UUID: PoolAccount]) async {
         isLoading = true
         defer { isLoading = false }
@@ -70,9 +67,9 @@ final class TeamUsageStats: ObservableObject {
     }
 }
 
-/// The Team-usage dashboard, now a pane inside the Settings sidebar (not a stray window). Two
-/// visual halves: live per-account usage bars (work regardless of attribution), and — when
-/// prompt logging is on — Swift Charts of who's been driving the pool over the last 7 days.
+/// The Team usage pane inside the Settings sidebar. Two halves: live per-account usage bars,
+/// which work regardless of attribution, and, when prompt logging is on, charts of who has been
+/// driving the pool over the last 7 days.
 struct TeamUsagePane: View {
     @ObservedObject var state: AppState
     @ObservedObject var pool: PoolState
@@ -161,7 +158,7 @@ struct TeamUsagePane: View {
                             .frame(width: 90, alignment: .trailing)
                     }
                 }
-                Text("Bars show the \(window.rawValue) window. Green has room; red is near the limit.")
+                Text("Bars show the \(window.rawValue) window. Green has room, red is near the limit.")
                     .font(.caption2).foregroundStyle(Theme.textDim)
             }
         }
@@ -187,7 +184,7 @@ struct TeamUsagePane: View {
             } else if stats.isLoading && stats.members.isEmpty {
                 ProgressView().frame(maxWidth: .infinity).padding()
             } else if stats.members.isEmpty {
-                Text("No prompts logged yet in the last 7 days. Once you and your teammates use Claude Code, activity shows up here.")
+                Text("No prompts logged in the last 7 days. Activity shows up here once you and your teammates use Claude Code.")
                     .font(.callout).foregroundStyle(Theme.textDim).fixedSize(horizontal: false, vertical: true)
             } else {
                 charts
@@ -198,7 +195,7 @@ struct TeamUsagePane: View {
 
     private var attributionPrompt: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Prompt logging is off. Turn it on to see who's driving the pool — each prompt logs a timestamp and the active account, never its contents.")
+            Text("Prompt logging is off. Turn it on to see who's driving the pool. Each prompt logs a timestamp and the active account, never its contents.")
                 .font(.callout).foregroundStyle(Theme.textDim).fixedSize(horizontal: false, vertical: true)
             Button("Turn on prompt logging") { state.setAttributionEnabled(true) }
                 .buttonStyle(.borderedProminent)
@@ -210,7 +207,7 @@ struct TeamUsagePane: View {
 
     private var charts: some View {
         HStack(alignment: .top, spacing: 20) {
-            // Share of the pool — donut.
+            // Share of the pool, as a donut.
             VStack(spacing: 6) {
                 Chart(stats.members) { m in
                     SectorMark(
@@ -226,7 +223,7 @@ struct TeamUsagePane: View {
                 Text("Share of prompts").font(.caption2).foregroundStyle(Theme.textDim)
             }
 
-            // Prompt counts — horizontal bars.
+            // Prompt counts, as horizontal bars.
             VStack(alignment: .leading, spacing: 6) {
                 Chart(stats.members) { m in
                     BarMark(
@@ -299,9 +296,8 @@ struct TeamUsagePane: View {
     }
 }
 
-/// A rounded horizontal meter: filled proportion coloured by usage (or a fixed tint for shares).
-/// Animates when its value changes — the source of the dashboard's "interactive" feel as the
-/// window segmented control flips between 5-hour and 7-day.
+/// A rounded horizontal meter: fill proportion coloured by usage, or a fixed tint for shares.
+/// Animates on value change, which is what makes flipping the 5-hour/7-day control feel live.
 private struct UsageMeter: View {
     let pct: Double?
     var tint: Color?

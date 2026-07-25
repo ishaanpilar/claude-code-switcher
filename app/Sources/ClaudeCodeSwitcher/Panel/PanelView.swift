@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// The dropdown itself (`MenuBarExtra(..., style: .window)`'s content). Layout follows
-/// BUILD_PLAN.md section 7's spec: header (with a poll-leader indicator dot), account list,
-/// quick actions (switch-to-best / rotate, only shown when there's another eligible account —
-/// both reuse `AutoSwitchEngine`'s claim-aware scoring rather than duplicating it here), add,
-/// settings (auto-switch toggle + threshold).
+/// The dropdown itself (`MenuBarExtra(..., style: .window)`'s content): header with a poll-leader
+/// dot, account list, quick actions, and the auto-switch toggle. "Switch to best" appears only
+/// when another eligible account exists, and reuses `AutoSwitchEngine`'s claim-aware scoring
+/// rather than duplicating it here.
 struct PanelView: View {
     @ObservedObject var state: AppState
     @ObservedObject var pool: PoolState
@@ -45,23 +44,28 @@ struct PanelView: View {
         .padding(.vertical, 10)
         .frame(width: 300)
         .background(Theme.surface)
-        // Wires PoolState → AppState the moment onboarding finishes; `configurePool` is
-        // idempotent against repeat calls for the same team, so re-evaluation here is harmless.
+        // Wires PoolState into AppState the moment onboarding finishes. `configurePool` is
+        // idempotent for the same team, so re-evaluation here is harmless.
         .task(id: readyTeamId) {
             if case .ready(let team, let member) = pool.step {
                 state.configurePool(team: team, member: member, auth: pool.auth)
             }
         }
         .confirmationDialog("Add \(state.activeAccount?.email ?? "this account") to the team pool?", isPresented: $showShareModePrompt, titleVisibility: .visible) {
-            Button("Shared — teammates can switch to it") {
+            Button("Shared: teammates can switch to it") {
                 Task { await state.addCurrentAccount(shareMode: .shared) }
             }
-            Button("Visibility-only — usage shown, token stays here") {
+            Button("Visibility only: usage shown, token stays here") {
                 Task { await state.addCurrentAccount(shareMode: .visibilityOnly) }
             }
-            Button("Just add it locally, skip the pool", role: .cancel) {
+            // Deliberately not `role: .cancel`. SwiftUI runs a cancel-role button's action on any
+            // dismissal, not just an explicit tap, so clicking outside or pressing Escape used to
+            // silently add the account locally and skip the pool with no feedback at all. Now
+            // dismissal does nothing, and skipping the pool takes an explicit tap like the others.
+            Button("Add locally only, skip the pool") {
                 Task { await state.addCurrentAccount() }
             }
+            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -109,11 +113,9 @@ struct PanelView: View {
         .padding(.horizontal, 12)
     }
 
-    /// Visible proof, not just an internal implementation detail — this is the direct answer to
-    /// "how do I know nothing is being shared right now": offline mode means `configurePool` is
-    /// never called, so no Supabase client call, Realtime subscription, or poll-leader loop ever
-    /// starts (see AppState.swift's header comment on `configurePool` for the single entry point
-    /// that gates all of it). The badge just makes that structural fact visible in the UI.
+    /// The visible answer to "how do I know nothing is being shared right now". Offline mode means
+    /// `configurePool` is never called, so no Supabase call, Realtime subscription, or poll-leader
+    /// loop ever starts. The badge makes that structural fact visible.
     private var offlineBadge: some View {
         HStack(spacing: 3) {
             Image(systemName: "wifi.slash").font(.system(size: 8))
@@ -123,7 +125,7 @@ struct PanelView: View {
         .padding(.horizontal, 5)
         .padding(.vertical, 1)
         .background(Capsule().fill(Theme.surface2))
-        .help("Local-only mode — nothing leaves this Mac. No account or usage data is sent anywhere unless you sign in to a team.")
+        .help("Local only. Nothing leaves this Mac unless you sign in to a team.")
     }
 
     private var accountList: some View {
@@ -141,9 +143,12 @@ struct PanelView: View {
                         account: account,
                         isActive: account.accountUuid == state.activeAccount?.accountUuid,
                         isOwner: account.poolAccount?.ownerUserId == state.myUserId,
+                        isPoolConfigured: isPoolReady,
                         onSwitch: { Task { await state.switchTo(account) } },
                         onRemove: { Task { await state.remove(account.accountUuid) } },
                         onSetShareMode: { mode in Task { await state.setShareMode(account, to: mode) } },
+                        onAddToPool: { mode in Task { await state.addToPool(account, shareMode: mode) } },
+                        onDemoteToLocalOnly: { Task { await state.demoteToLocalOnly(account) } },
                         onRequestReauth: { Task { await state.requestReauth(account) } }
                     )
                     .disabled(state.isSwitching)
@@ -159,6 +164,13 @@ struct PanelView: View {
             if hasOtherEligibleAccounts {
                 PanelActionButton(title: "Switch to best account", systemImage: "bolt.fill") {
                     Task { await state.switchToBestAccount() }
+                }
+                .disabled(state.isSwitching)
+                // Round-robin, deliberately ignoring usage: "give me a different one" rather than
+                // "give me the emptiest one". `AppState.rotateAccount` existed with no caller, so
+                // this button was documented but unreachable.
+                PanelActionButton(title: "Rotate to next account", systemImage: "arrow.triangle.2.circlepath") {
+                    Task { await state.rotateAccount() }
                 }
                 .disabled(state.isSwitching)
             }
@@ -237,9 +249,9 @@ struct PanelView: View {
         return false
     }
 
-    /// Handed over alongside the invite code — `joinTeam` needs both (BUILD_PLAN.md section 5:
-    /// two different secrets, two different trust boundaries). Read back from this device's own
-    /// Keychain rather than fetched from anywhere, since it's never stored server-side at all.
+    /// Handed over alongside the invite code, since `joinTeam` needs both: two different secrets
+    /// with two different trust boundaries. Read from this device's Keychain rather than fetched,
+    /// because it is never stored server-side.
     private var currentTeamKey: String? {
         guard case .ready(let team, _) = pool.step else { return nil }
         return pool.currentTeamKeyForSharing(team: team)
@@ -269,7 +281,7 @@ private struct InvitePopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Invite a teammate").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.text)
-            Text("Send both of these together, out-of-band (text, Slack, ...). The code is single-use and expires in 7 days; the key never touches Supabase.")
+            Text("Send both together over text or Slack. The code is single-use and expires in 7 days. The key never touches Supabase.")
                 .font(.system(size: 10))
                 .foregroundStyle(Theme.textDim)
 

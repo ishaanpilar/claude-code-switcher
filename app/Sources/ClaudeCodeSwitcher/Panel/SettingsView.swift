@@ -1,13 +1,12 @@
 import SwiftUI
 
-/// The full Settings window (opened via "Settings…" in the panel, or Cmd-,). Built as a native
-/// macOS sidebar window — `NavigationSplitView` with a selectable list on the left and a grouped
-/// `Form` per pane on the right, the same shape System Settings / Xcode preferences use. The
-/// menu-bar dropdown stays the quick see-and-switch surface; deep configuration lives here.
+/// The full Settings window, opened via "Settings…" in the panel or Cmd-comma. A
+/// `NavigationSplitView` with a selectable list on the left and a grouped `Form` per pane, the
+/// same shape System Settings uses. The menu-bar dropdown stays the quick see-and-switch surface;
+/// deep configuration lives here.
 ///
-/// The sidebar's main sections sit in a `List`; **About** is pinned to the very bottom (a divider
-/// + its own row) rather than being another list item, so it reads as app-info rather than
-/// another setting — the same placement System Settings uses for its bottom items.
+/// About is pinned to the bottom of the sidebar rather than being another list item, so it reads
+/// as app info rather than another setting.
 struct SettingsView: View {
     @ObservedObject var state: AppState
     @ObservedObject var pool: PoolState
@@ -22,7 +21,7 @@ struct SettingsView: View {
         case about = "About"
 
         var id: String { rawValue }
-        /// The configuration panes — About is handled separately (pinned to the bottom).
+        /// The configuration panes. About is handled separately, pinned to the bottom.
         static var mainCases: [Pane] { [.accounts, .teamUsage, .autoSwitch, .team, .general] }
         var icon: String {
             switch self {
@@ -39,16 +38,26 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             settingsContent
-            // Previously nothing in this window ever showed state.lastError, so a failed action
-            // (e.g. "Remove from pool" hitting a server-side error) looked identical to a
-            // successful one — the row just silently stayed put with no explanation anywhere.
+            // Without this, a failed action here (say "Remove from pool" hitting a server-side
+            // error) looked identical to a successful one: the row just stayed put, unexplained.
+            // Dismissable, since nothing else in this window ever clears `lastError`, and a stale
+            // failure sitting under an unrelated pane reads as if that pane is broken.
             if let error = state.lastError {
                 Divider()
-                Text(error)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button {
+                        state.lastError = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss")
+                }
+                .padding(8)
             }
         }
         .frame(minWidth: 720, idealWidth: 780, minHeight: 480, idealHeight: 540)
@@ -108,7 +117,7 @@ private struct MyAccountsPane: View {
     var body: some View {
         Form {
             Section {
-                Text("Each account is controlled by whoever added it. You have full control over the accounts you own; teammates' accounts are read-only here.")
+                Text("Each account is controlled by whoever added it. Teammates' accounts are read-only here.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -163,15 +172,27 @@ private struct AccountPaneSection: View {
 
         if account.poolAccount == nil {
             LabeledContent("Status") {
-                Text("Local only — not in the team pool").foregroundStyle(.secondary)
+                Text("On this Mac only. Teammates can't see it.").foregroundStyle(.secondary)
+            }
+            // Previously just the label above, with no way to act on it: `setShareMode` no-ops
+            // without a pool row, so local-only was permanent once chosen in the add dialog.
+            if account.isLocallyKnown, state.myUserId != nil {
+                Menu("Add to the team pool…") {
+                    Button("Shared: teammates can switch to it") {
+                        Task { await state.addToPool(account, shareMode: .shared) }
+                    }
+                    Button("Visibility only: login stays on my Mac") {
+                        Task { await state.addToPool(account, shareMode: .visibilityOnly) }
+                    }
+                }
             }
         } else if isOwner {
             Picker("Sharing", selection: Binding(
                 get: { account.poolAccount?.shareMode ?? .visibilityOnly },
                 set: { mode in Task { await state.setShareMode(account, to: mode) } }
             )) {
-                Text("Shared — teammates can switch to it").tag(ShareMode.shared)
-                Text("Visibility-only — login stays on my Mac").tag(ShareMode.visibilityOnly)
+                Text("Shared: teammates can switch to it").tag(ShareMode.shared)
+                Text("Visibility only: login stays on my Mac").tag(ShareMode.visibilityOnly)
             }
             .pickerStyle(.menu)
 
@@ -185,18 +206,30 @@ private struct AccountPaneSection: View {
                 }
             }
 
-            Button("Remove from pool", role: .destructive) { confirmRemove = true }
-                .confirmationDialog("Remove \(account.email) from the team pool?", isPresented: $confirmRemove, titleVisibility: .visible) {
-                    Button("Remove from pool", role: .destructive) {
+            // Two different exits, deliberately worded to separate them. Demoting is reversible
+            // (the "Add to the team pool…" menu puts it back) and keeps the account working here,
+            // so it needs no confirmation. Removing outright deletes this Mac's credential backup
+            // and can't be undone from inside the app, so it does.
+            if account.isLocallyKnown {
+                Button("Take out of pool, keep on this Mac") {
+                    Task { await state.demoteToLocalOnly(account) }
+                }
+            }
+
+            Button("Remove from pool and this Mac", role: .destructive) { confirmRemove = true }
+                .confirmationDialog("Remove \(account.email) everywhere?", isPresented: $confirmRemove, titleVisibility: .visible) {
+                    Button("Remove everywhere", role: .destructive) {
                         Task { await state.removeFromPool(account) }
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Teammates will no longer see or switch to it. This does not log the account out.")
+                    Text(account.isLocallyKnown
+                         ? "Teammates lose access, and this Mac's saved login for it is deleted too. The account itself isn't logged out, and you can add it again while signed into it. To keep it here, use \"Take out of pool\" instead."
+                         : "Teammates will no longer see or switch to it. The account itself isn't logged out.")
                 }
         } else {
             LabeledContent("Sharing") {
-                Text(account.poolAccount?.shareMode == .shared ? "Shared" : "Visibility-only")
+                Text(account.poolAccount?.shareMode == .shared ? "Shared" : "Visibility only")
                     .foregroundStyle(.secondary)
             }
         }
@@ -217,7 +250,7 @@ private struct AutoSwitchPane: View {
                     set: { new in update { $0.enabled = new } }
                 ))
             } footer: {
-                Text("When your active account crosses the threshold, move to whichever eligible account has the most room — never one a teammate is actively using.")
+                Text("When the active account crosses the threshold, move to whichever eligible account has the most room. Never one a teammate has reserved.")
             }
 
             Section {
@@ -245,7 +278,7 @@ private struct AutoSwitchPane: View {
             } header: {
                 Text("Rules")
             } footer: {
-                Text("Defaults (90% / 10% / 5 min / 60 sec) are tuned against the usage API's real rate-limit shape — change them only if you know why.")
+                Text("The defaults are tuned against the usage API's real rate-limit shape. Change them only if you know why.")
             }
             .disabled(!settings.enabled)
         }
@@ -289,7 +322,7 @@ private struct TeamPane: View {
                             ForEach(pool.availableTeams) { t in Text(t.name).tag(t.id) }
                         }
                     } footer: {
-                        Text("Switching changes which pool the app shares and switches accounts within. Your teams never see each other.")
+                        Text("Switching changes which pool the app shares within. Your teams never see each other.")
                     }
                 }
 
@@ -304,7 +337,7 @@ private struct TeamPane: View {
                         set: { state.setReserveAccountsWhileInUse($0) }
                     ))
                 } footer: {
-                    Text("Off by default — teammates can use the same account at the same time. Turn on to reserve accounts you own while you're using them (shows a \"held by you\" badge, blocks others, and steers auto-switch away). This only ever reserves accounts you own — never a teammate's.")
+                    Text("Off by default, so teammates can use the same account at once. Turn on to reserve accounts you own while using them: shows a \"held by you\" badge, blocks others, and steers auto-switch away. Never reserves a teammate's account.")
                 }
 
                 Section("Members") {
@@ -353,7 +386,7 @@ private struct TeamPane: View {
                     } header: {
                         Text("Invite a teammate")
                     } footer: {
-                        Text("Send both the code and the team key, out-of-band. Single-use, expires in 7 days.")
+                        Text("Send both the code and the team key. Single-use, expires in 7 days.")
                     }
                 }
 
@@ -366,7 +399,7 @@ private struct TeamPane: View {
                             Button("Leave team", role: .destructive) { Task { await pool.leaveTeam() } }
                             Button("Cancel", role: .cancel) {}
                         } message: {
-                            Text("Your accounts are removed from the pool. If you're the owner, you must first transfer team ownership or remove the other members.")
+                            Text("The accounts you own are removed from the pool. Owners must transfer ownership or remove the other members first.")
                         }
                 }
             } else {
@@ -376,9 +409,8 @@ private struct TeamPane: View {
         .formStyle(.grouped)
     }
 
-    /// Create or join an *additional* team from Settings (the multi-team story: a separate pool
-    /// with a different set of people). Same RPCs as first-time onboarding; joining a team
-    /// switches to it automatically.
+    /// Create or join an additional team: a separate pool with a different set of people. Same
+    /// RPCs as first-time onboarding, and joining switches to the new team automatically.
     private var addAnotherTeamSection: some View {
         Section {
             if !showAddTeam {
@@ -413,7 +445,7 @@ private struct TeamPane: View {
 
     private var localOnlySection: some View {
         Section {
-            Text("You're in offline mode — the app switches between just this Mac's own accounts, with no cloud and no sharing.")
+            Text("Offline mode: the app switches between this Mac's own accounts, with no cloud and no sharing.")
                 .foregroundStyle(.secondary)
             Button("Sign in to use a team") { pool.exitLocalOnly() }
         } header: {
@@ -461,11 +493,11 @@ private struct GeneralPane: View {
                     set: { state.setAttributionEnabled($0) }
                 ))
             } footer: {
-                Text("Installs a Claude Code hook that records a timestamp and the active account on every prompt you submit — never prompt contents. Powers the Team-usage digest.")
+                Text("Installs a Claude Code hook that records a timestamp and the active account on every prompt, never its contents. Powers the Team usage digest.")
             }
 
             Section {
-                Text("Sharing one subscription across several people and IPs cuts against Anthropic's consumer terms and can look anomalous to their systems. This app does nothing to hide or evade that.")
+                Text("Sharing one subscription across several people and IPs goes against Anthropic's consumer terms and can look unusual to their systems. This app does nothing to hide that.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } header: {
@@ -491,8 +523,8 @@ private struct AboutPane: View {
         return "Version \(short) (\(build))"
     }
 
-    /// The logo the build script copies into the bundle. Falls back to the live app icon when
-    /// running as a bare dev binary (where Bundle.main isn't the .app and has no logo.png).
+    /// The logo the build script copies into the bundle. Falls back to the live app icon in a bare
+    /// dev binary, where `Bundle.main` isn't the .app and has no logo.png.
     private var logo: NSImage {
         if let url = Bundle.main.url(forResource: "logo", withExtension: "png"),
            let image = NSImage(contentsOf: url) {
@@ -517,6 +549,8 @@ private struct AboutPane: View {
                     Text("Made by \(Self.developerName)").font(.callout).foregroundStyle(.secondary)
                 }
 
+                developerNote
+
                 Divider().padding(.vertical, 4)
 
                 VStack(spacing: 8) {
@@ -528,7 +562,7 @@ private struct AboutPane: View {
                         openMail(subject: "Claude Code Switcher")
                     }
                     linkButton("Report a bug", systemImage: "ladybug") {
-                        openMail(subject: "Claude Code Switcher — Bug report",
+                        openMail(subject: "Claude Code Switcher bug report",
                                  body: "Describe what happened:\n\n\n---\n\(version)\nmacOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
                     }
                     linkButton("View source on GitHub", systemImage: "chevron.left.forwardslash.chevron.right") {
@@ -542,7 +576,7 @@ private struct AboutPane: View {
 
                 Spacer(minLength: 0)
 
-                Text("© 2026 \(Self.developerName). Logs record app events only — never tokens or prompt contents.")
+                Text("© 2026 \(Self.developerName). Logs record app events only, never tokens or prompt contents.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -552,6 +586,22 @@ private struct AboutPane: View {
             .frame(maxWidth: .infinity)
             .padding(28)
         }
+    }
+
+    private var developerNote: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Great software comes from people who back each other. Bring your team, pool what you have, and build something that matters.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(Self.developerName)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(14)
+        .frame(maxWidth: 320)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
     }
 
     private func linkButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {

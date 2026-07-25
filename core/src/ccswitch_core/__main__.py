@@ -1,12 +1,12 @@
-"""``ccswitch-core`` CLI — one command per process invocation.
+"""``ccswitch-core`` CLI: one command per process invocation.
 
 Spawned by the Swift app (see app/Sources/ClaudeCodeSwitcher/CoreBridge) via
 ``Process``. Always prints exactly one JSON object to stdout and exits 0 on
-success, non-zero with ``{"ok": false, "error": {...}}`` on failure — never a
-Python traceback to stdout. Logging goes to stderr only, so it never pollutes
-the JSON contract Swift parses.
+success, or non-zero with ``{"ok": false, "error": {...}}`` on failure, never a
+Python traceback. Logging goes to stderr only, so it never pollutes the JSON
+contract Swift parses.
 
-Command surface (BUILD_PLAN.md section 2):
+Command surface:
   snapshot                                  active identity + locally-known accounts
   add-current                               capture the currently logged-in account
   switch        --account-uuid U            activate a locally-backed-up account
@@ -17,7 +17,7 @@ Command surface (BUILD_PLAN.md section 2):
   read-usage    [--account-uuid U]          fetch usage; token from stdin or local backup
   refresh-token                             refresh a token given on stdin
   save-credentials --account-uuid U         persist a token (stdin) as this account's local
-                                             backup, without activating it — see cmd_save_credentials
+                                             backup without activating it
   remove        --account-uuid U            delete this machine's local backup
 """
 
@@ -28,7 +28,7 @@ import json
 import logging
 import sys
 
-from ccswitch_core import oauth, store as local_store, switch
+from ccswitch_core import oauth, switch
 from ccswitch_core.credentials import CredentialStore
 from ccswitch_core.exceptions import CoreError
 
@@ -105,7 +105,7 @@ def cmd_read_usage(args: argparse.Namespace) -> int:
 
     access_token = oauth.extract_oauth_data(token)
     if access_token is None:
-        return _err("not_oauth", "Stored credential is not an OAuth token (likely an API key — no usage data)")
+        return _err("not_oauth", "Stored credential is not an OAuth token (likely an API key, which has no usage data)")
     access_token_str = access_token.get("accessToken")
     if not access_token_str:
         return _err("no_access_token", "Stored OAuth credential has no accessToken")
@@ -128,15 +128,14 @@ def cmd_refresh_token(_args: argparse.Namespace) -> int:
 
 
 def cmd_save_credentials(args: argparse.Namespace) -> int:
-    """Persists a token to this account's local backup *without* activating it (no
-    ~/.claude.json write, no Claude Code lock held). Exists specifically for the auto-switch
-    engine's freshen-before-activate step: a refreshed OAuth token must be saved the instant the
-    refresh succeeds, before anything else is attempted — a refresh_token is typically single-use,
-    so if the subsequent activate fails for an unrelated reason (lock contention, a transient
-    error) and the freshly-refreshed token was never persisted, the *next* attempt reads the old,
-    already-consumed refresh_token back out of storage and is guaranteed to fail with
-    invalid_grant. Saving here first means a failed activate just means "retry the activate" —
-    never "this account is now permanently dead."
+    """Persists a token to this account's local backup without activating it: no
+    ~/.claude.json write, no Claude Code lock held. Exists for the auto-switch engine's
+    freshen-before-activate step. A refresh_token is typically single-use, so a refreshed
+    OAuth token must be saved the instant the refresh succeeds. If the subsequent activate
+    fails for an unrelated reason (lock contention, a transient error) and the fresh token
+    was never persisted, the next attempt reads the already-consumed refresh_token back out
+    of storage and is guaranteed to fail with invalid_grant. Saving first means a failed
+    activate only means "retry the activate", never "this account is now permanently dead".
     """
     token = _read_stdin()
     if not token:
@@ -196,7 +195,7 @@ def main() -> int:
         return args.func(args)
     except CoreError as e:
         return _err(e.code, str(e))
-    except Exception as e:  # last resort — must still be valid JSON, never a traceback
+    except Exception as e:  # last resort: must still be valid JSON, never a traceback
         logging.getLogger("ccswitch-core").exception("unhandled error")
         return _err("internal_error", str(e))
 

@@ -1,6 +1,11 @@
-"""Typed errors. Every one carries a stable ``code`` so the Swift side can
-switch on it instead of string-matching a message (see __main__.py's JSON
-error envelope: ``{"ok": false, "error": {"code": ..., "message": ...}}``)."""
+"""Typed errors. Each carries a stable ``code`` so the Swift side can switch on
+it instead of string-matching a message. See __main__.py's error envelope:
+``{"ok": false, "error": {"code": ..., "message": ...}}``.
+
+Failures that never propagate as exceptions are not modelled here: token
+refresh and usage fetch both report through their own return values
+(``oauth.RefreshOutcome``) or an ``_err()`` code emitted at the CLI boundary.
+"""
 
 from __future__ import annotations
 
@@ -27,11 +32,3 @@ class CredentialWriteError(CoreError):
 
 class ClaudeCodeLockTimeout(CoreError):
     code = "lock_timeout"
-
-
-class RefreshFailedError(CoreError):
-    code = "refresh_failed"
-
-
-class UsageFetchError(CoreError):
-    code = "usage_fetch_error"

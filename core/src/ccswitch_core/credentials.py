@@ -10,16 +10,18 @@ from the source, both intentional:
    ``account_uuid`` handed to it. No slot table, no swap/move machinery.
 2. **No sticky Keychain-unusable cache across calls.** claude-swap is a
    long-running daemon (menu bar/TUI) so it caches Keychain usability for the
-   process lifetime. This process is a short-lived subprocess — one command,
-   then exit — so there is no "process lifetime" worth caching against; each
-   invocation just tries the Keychain and falls back to file on failure.
+   process lifetime. This process is a short-lived subprocess (one command,
+   then exit) so there is no "process lifetime" worth caching against. Each
+   invocation tries the Keychain and falls back to file on failure.
 
 What is **not** simplified, because it is correctness-critical:
 
 - The OAuth-vs-managed-API-key mutual exclusion Claude Code itself enforces.
 - The shared-vs-account-owned credential field split (``SHARED_CREDENTIAL_KEYS``):
   activating a stored account must not clobber *live* machine-shared OAuth
-  state (e.g. MCP server logins) with an older snapshot.
+  state (e.g. MCP server logins) with an older snapshot. This build also
+  strips those fields on the way *into* the backup store, which the single-user
+  original had no reason to do -- see strip_shared_credential_fields.
 - Bumping an existing ``.credentials.json``'s mtime after a Keychain write, so
   a running Claude Code session hot-reloads instead of serving a memoized
   token until restart (claude-swap issue #86).
@@ -31,7 +33,6 @@ import base64
 import json
 import logging
 import os
-import sys
 import tempfile
 from pathlib import Path
 
@@ -60,7 +61,6 @@ SHARED_CREDENTIAL_KEYS = frozenset({
     "mcpXaaIdpConfig",
     "pluginSecrets",
 })
-ACCOUNT_CREDENTIAL_KEYS = frozenset({"claudeAiOauth", "trustedDeviceToken"})
 
 
 def looks_like_api_key(credentials: str | None) -> bool:
@@ -96,6 +96,31 @@ def merge_shared_credential_fields(target_credentials: str, shared_fields: dict)
     composed = {k: v for k, v in target.items() if k not in SHARED_CREDENTIAL_KEYS}
     composed.update(shared_fields)
     return json.dumps(composed)
+
+
+def strip_shared_credential_fields(credentials: str) -> str:
+    """Drop the machine-shared fields from a credential blob.
+
+    SHARED_CREDENTIAL_KEYS are properties of *this Mac* (MCP server OAuth
+    tokens, plugin secrets), not of the Claude account. They only appear in a
+    credential because Claude Code stores them in the same JSON object.
+
+    Anything we persist as an account backup can travel: ``export-token`` reads
+    that backup, and for a shared account the Swift side encrypts it and uploads
+    it to ``account_tokens``, where every member of the team can decrypt it. So
+    without this filter, adding a shared account hands your MCP logins and
+    plugin secrets to the whole team along with the Claude token they asked for.
+
+    Stripping costs nothing on the way back in: ``prepare_for_activation``
+    re-supplies the activating machine's own shared fields at activation time,
+    which is the only place they are meaningful anyway.
+    """
+    data = _credential_object(credentials)
+    if data is None:
+        return credentials  # raw API key or unparseable -- nothing to strip
+    if not any(key in data for key in SHARED_CREDENTIAL_KEYS):
+        return credentials
+    return json.dumps({k: v for k, v in data.items() if k not in SHARED_CREDENTIAL_KEYS})
 
 
 class CredentialStore:
@@ -188,7 +213,7 @@ class CredentialStore:
 
     def _refresh_stale_credentials_file(self, credentials: str) -> None:
         """Rewrite an *already-present* .credentials.json with the same fresh
-        bytes after a Keychain write, purely to bump its mtime — never
+        bytes after a Keychain write, purely to bump its mtime. Never
         create one when absent (Keychain-only users stay fileless)."""
         cred_file = get_credentials_path()
         if not cred_file.exists():
@@ -341,6 +366,10 @@ class CredentialStore:
         return ""
 
     def write_account_credentials(self, account_uuid: str, credentials: str) -> None:
+        # Single choke point for "our own per-account backup", so every writer
+        # (capture, activate, save-credentials) gets the same filtering -- see
+        # strip_shared_credential_fields for why this must not be skipped.
+        credentials = strip_shared_credential_fields(credentials)
         if self.use_keychain():
             try:
                 macos_keychain.set_password(SECURITY_SERVICE, account_uuid, credentials)

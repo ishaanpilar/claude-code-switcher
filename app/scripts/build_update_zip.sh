@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds and signs the Sparkle auto-update payload from the .app build_app_bundle.sh already
 # produced. Separate from build_dmg.sh: Sparkle's tooling (sign_update/appcast enclosures) expects
-# a .zip of the .app, not a disk image — the DMG stays the manual/first-install artifact, this zip
+# a .zip of the .app, not a disk image. The DMG stays the manual/first-install artifact; this zip
 # is only ever fetched in-app via the appcast.
 set -eu
 
@@ -12,15 +12,15 @@ VERSION="${1:-0.1}"
 TAG="v${VERSION}.0"
 ZIP="$APP_DIR/.build/ClaudeCodeSwitcher-$VERSION.zip"
 
-[ -d "$BUNDLE" ] || { echo "No .app at $BUNDLE — run build_app_bundle.sh release first."; exit 1; }
+[ -d "$BUNDLE" ] || { echo "No .app at $BUNDLE. Run build_app_bundle.sh release first."; exit 1; }
 
 SIGN_UPDATE=$(find "$APP_DIR/.build/artifacts" -type f -name sign_update ! -path "*/old_dsa_scripts/*" | head -1)
-[ -n "$SIGN_UPDATE" ] || { echo "No sign_update found under .build/artifacts — run swift build first."; exit 1; }
+[ -n "$SIGN_UPDATE" ] || { echo "No sign_update found under .build/artifacts. Run swift build first."; exit 1; }
 
 BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$BUNDLE/Contents/Info.plist")
 
 rm -f "$ZIP"
-# ditto, not `zip -r` — preserves the bundle/resource-fork structure codesign validation needs.
+# ditto, not `zip -r`: preserves the bundle/resource-fork structure codesign validation needs.
 ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" "$ZIP"
 
 SIG_FRAGMENT=$("$SIGN_UPDATE" "$ZIP")
@@ -32,7 +32,7 @@ cat <<XML
 Built and signed: $ZIP
 
 Paste into app/appcast.xml (inside <channel>, above the previous <item>) AFTER the GitHub
-release + its .zip asset exist (the enclosure url below must already resolve) — then fill in
+release + its .zip asset exist (the enclosure url below must already resolve), then fill in
 this release's "What's new" bullets:
 
   <item>
