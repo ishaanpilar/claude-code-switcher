@@ -6,6 +6,23 @@
     <description>Update feed for Claude Code Switcher.</description>
     <language>en-us</language>
     <item>
+      <title>Version 0.9.11</title>
+      <pubDate>Sat, 01 Aug 2026 19:09:11 +0000</pubDate>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>0.9.11</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <ul>
+          <li>Fixed: switching to an account a teammate had been using often ended at Claude Code's login screen. Claude's logins are single-use — each refresh replaces the one before it — so whoever last used a shared account held the only working copy and had no way to return it. The pool kept handing out a login that had already been retired.</li>
+          <li>Fixed: switching away from an account could discard the newest login for it, quietly breaking that account for everyone else.</li>
+          <li>Fixed: switching by hand never refreshed a nearly-expired login the way automatic switching did, so it failed minutes later with no explanation. It now refreshes first, and says so plainly when an account genuinely needs a re-login.</li>
+          <li>Changed: shared accounts are reserved while you use them, and reservations are now on by default. Two people on one login is what retires each other's tokens.</li>
+          <li>Removed: "Rotate to next account", which duplicated "Switch to best account".</li>
+        </ul>
+      ]]></description>
+      <enclosure url="https://github.com/ishaanpilar/claude-code-switcher/releases/download/v0.9.11/ClaudeCodeSwitcher-0.9.11.zip" type="application/octet-stream" sparkle:edSignature="asFL8DsMIbjkIx8EyuDAh08/VpQJkCnEJZgw2h8JIL4oWXSE0iMqfjWDnhHwK02OPV44tdiEmXfKdkp+kVAVCQ==" length="16023105" />
+    </item>
+    <item>
       <title>Version 0.9.10</title>
       <pubDate>Sat, 25 Jul 2026 07:06:00 +0000</pubDate>
       <sparkle:version>8</sparkle:version>
