@@ -337,7 +337,7 @@ private struct TeamPane: View {
                         set: { state.setReserveAccountsWhileInUse($0) }
                     ))
                 } footer: {
-                    Text("Off by default, so teammates can use the same account at once. Turn on to reserve accounts you own while using them: shows a \"held by you\" badge, blocks others, and steers auto-switch away. Never reserves a teammate's account.")
+                    Text("Reserves accounts you own while you're using them: shows a \"held by you\" badge, blocks others, and steers auto-switch away. On by default — two people driving one login rotate its token out from under each other. Shared accounts are always reserved while in use, regardless of this setting.")
                 }
 
                 Section("Members") {

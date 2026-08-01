@@ -4,8 +4,15 @@ Everything the app stores in the cloud. Every table has row-level security
 enabled, and every mutation either checks `is_team_member()` or goes through a
 `security definer` RPC that checks it internally.
 
-**Applied through `20260723000002`.** `20260725000001`, `20260725000002`, and
-`20260726000001` are new and still need applying.
+**Applied through `20260801000001` — everything in `migrations/` is live.**
+
+Don't trust this line on its own; it has been stale before. `20260725000001`,
+`20260725000002` and `20260726000001` were recorded here as pending long after
+they had actually been applied, and re-running them would have failed on
+`create table profiles` rather than no-opping. Check the database before
+applying anything: `select to_regclass('public.profiles')`, `select proname
+from pg_proc where proname = 'push_account_token'`, `select jobname from
+cron.job`. Only `create or replace function` files here are safely re-runnable.
 
 ## Applying migrations
 
@@ -62,4 +69,5 @@ signups and grant/revoke `online_access` -- see `admin/README.md`.
 | `20260723000002_switch_log_account_delete_fix.sql` | Fixes "Remove from pool" failing on every account. `switch_log.account_from`/`account_to` had no `ON DELETE` rule, unlike sibling `turn_log.account_id`, so any account with switch history hit a foreign-key violation. Now matches `turn_log`'s `ON DELETE SET NULL` |
 | `20260725000001_leave_team_multi_team_fix.sql` | Fixes `leave_team()` leaving an arbitrary team. It resolved the caller's team with a query matching one row per membership, and plpgsql's `SELECT INTO` silently keeps the first. Now takes `p_team`; the no-argument form remains for older clients but raises rather than guessing when the user is in several teams |
 | `20260725000002_usage_history_retention.sql` | Daily cron trimming `usage_history` to 30 days. The trigger above appends roughly 480 rows per account per day and nothing reads the table |
+| `20260801000001_holder_token_writeback.sql` | `push_account_token()`, the only sanctioned way a non-owner can write `account_tokens`. Accepts the team-key row from the account's owner **or** from whoever holds a live claim on it. Claude's OAuth refresh tokens are single-use, so whoever last drove a shared account holds its only live lineage; before this, a teammate had no way to put it back and the pool ciphertext stayed frozen at whatever the owner uploaded on sharing day, handing everyone else a spent token. Direct table writes stay owner-only under the 0002 policies |
 | `20260726000001_online_access_gate.sql` | `profiles` (one row per `auth.users`, auto-created by a trigger), an `online_access` flag defaulting to `false`, and a `has_online_access()` check added to `create_team()`/`join_team()` -- sign-up is open to anyone, but joining or starting a team (the on-ramp to every paid Supabase feature) now requires the admin to grant access first, via the `admin/` dashboard. Backfills `online_access = true` for everyone already in `members` so existing users aren't locked out |

@@ -9,6 +9,8 @@ contract Swift parses.
 Command surface:
   snapshot                                  active identity + locally-known accounts
   add-current                               capture the currently logged-in account
+  sync-active                               re-capture the active account's backup when Claude
+                                             Code has refreshed the live credential past it
   switch        --account-uuid U            activate a locally-backed-up account
   import-activate --account-uuid U [--email E] [--organization-uuid O]
                                              activate a token from stdin (e.g. decrypted
@@ -61,6 +63,10 @@ def cmd_snapshot(_args: argparse.Namespace) -> int:
 def cmd_add_current(_args: argparse.Namespace) -> int:
     account = switch.capture_current()
     return _ok(account=account)
+
+
+def cmd_sync_active(_args: argparse.Namespace) -> int:
+    return _ok(**switch.sync_active_credential())
 
 
 def cmd_switch(args: argparse.Namespace) -> int:
@@ -156,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("snapshot").set_defaults(func=cmd_snapshot)
     sub.add_parser("add-current").set_defaults(func=cmd_add_current)
+    sub.add_parser("sync-active").set_defaults(func=cmd_sync_active)
 
     p = sub.add_parser("switch")
     p.add_argument("--account-uuid", required=True)

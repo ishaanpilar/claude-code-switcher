@@ -16,13 +16,15 @@ pool spans machines.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
 from pathlib import Path
 
+from ccswitch_core import oauth
 from ccswitch_core.claude_locks import claude_config_lock, claude_credentials_lock
-from ccswitch_core.credentials import CredentialStore
+from ccswitch_core.credentials import CredentialStore, looks_like_api_key
 from ccswitch_core.exceptions import AccountNotFoundError, NoActiveAccountError, NoCredentialsError
 from ccswitch_core.paths import get_core_data_root, get_global_config_path
 from ccswitch_core import store as local_store
@@ -151,6 +153,120 @@ def capture_current() -> dict:
     return identity
 
 
+def _refresh_token_fingerprint(credentials: str | None) -> str | None:
+    """Short digest of a credential's ``refreshToken``: enough to tell two
+    lineages apart, never enough to reconstruct one. Safe to log."""
+    if not credentials:
+        return None
+    data = oauth.extract_oauth_data(credentials)
+    if not isinstance(data, dict):
+        return None
+    token = data.get("refreshToken")
+    if not isinstance(token, str) or not token:
+        return None
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _expires_at(credentials: str | None) -> int:
+    """``expiresAt`` in epoch ms, or 0 when absent. Only ever compared against
+    another credential for the *same* account on this machine, so the fact that
+    it was computed from a local clock (see oauth.try_refresh_oauth_credentials)
+    doesn't matter here -- both sides came from this same clock."""
+    if not credentials:
+        return 0
+    data = oauth.extract_oauth_data(credentials) or {}
+    value = data.get("expiresAt")
+    return value if isinstance(value, int) else 0
+
+
+def _sync_result(identity: dict | None, synced: bool, reason: str) -> dict:
+    return {
+        "synced": synced,
+        "reason": reason,
+        "account_uuid": (identity or {}).get("account_uuid"),
+        "email": (identity or {}).get("email"),
+    }
+
+
+def _drift_check(store: CredentialStore) -> tuple[dict | None, str | None, str]:
+    """Has Claude Code's live credential moved on from our backup?
+
+    Returns ``(identity, live_credentials, reason)``. ``live_credentials`` is
+    non-None only when a sync should actually happen; ``reason`` always explains
+    the outcome, synced or not.
+    """
+    identity = get_active_identity()
+    if identity is None:
+        return None, None, "no_active_account"
+    account_uuid = identity["account_uuid"]
+
+    # A first-ever login is auto-capture's job (see AutoCaptureController), not
+    # ours. Syncing an account we have no backup for would silently adopt it.
+    if not local_store.has_account(account_uuid):
+        return identity, None, "not_locally_known"
+
+    live = store.read_active_credentials()
+    if not live or looks_like_api_key(live):
+        return identity, None, "no_oauth_credential"
+    live_fp = _refresh_token_fingerprint(live)
+    if live_fp is None:
+        return identity, None, "no_refresh_token"
+
+    backup = store.read_account_credentials(account_uuid)
+    if live_fp == _refresh_token_fingerprint(backup):
+        return identity, None, "already_current"
+    # The backup can legitimately be *ahead* of what's live: the auto-switch
+    # engine refreshes and persists a token before it attempts activation (see
+    # the save-credentials command). Overwriting the newer lineage with the
+    # older one would re-arm the exact failure this function exists to prevent.
+    if _expires_at(backup) > _expires_at(live):
+        return identity, None, "backup_is_newer"
+
+    return identity, live, "drifted"
+
+
+def sync_active_credential() -> dict:
+    """Copy the *live* Claude Code credential into this machine's backup for the
+    active account, whenever Claude Code has moved on from what we stored.
+
+    Claude Code refreshes its own OAuth token as it runs, and the refresh token
+    rotates on every refresh, so the copy taken at activation goes stale within
+    hours of ordinary use. Nothing else in this app notices: the capture watcher
+    watches ``~/.claude.json``, which a token refresh does not touch, and on
+    macOS the credential itself lives in the Keychain, which emits no filesystem
+    events at all. Left unsynced the backup rots, switching back to the account
+    activates a spent refresh token, and Claude Code drops to the login screen.
+
+    Only ever touches the account that is *currently* active, since that is the
+    only one whose live credential exists on this machine.
+
+    Returns ``{"synced": bool, "reason": str, ...}`` rather than raising: every
+    "nothing to do" outcome here is routine, not an error.
+    """
+    store = CredentialStore()
+
+    # Cheap unlocked pre-check first. This runs on a timer, and in the steady
+    # state the two copies match, so taking Claude Code's own lockfiles on every
+    # tick would put contention on a running session for nothing. The
+    # authoritative read happens under the lock, only once drift actually shows.
+    identity, live, reason = _drift_check(store)
+    if live is None:
+        return _sync_result(identity, False, reason)
+
+    with claude_config_lock(), claude_credentials_lock():
+        # Re-check under the lock rather than trusting the pre-check. A switch
+        # may have landed in between, and the identity in ~/.claude.json is what
+        # names the backup we are about to write: pairing a stale identity with
+        # a fresh credential would overwrite one account's backup using another
+        # account's token, destroying the first.
+        identity, live, reason = _drift_check(store)
+        if live is None:
+            return _sync_result(identity, False, reason)
+        store.write_account_credentials(identity["account_uuid"], live)
+
+    return _sync_result(identity, True, "updated")
+
+
 def activate(
     account_uuid: str,
     *,
@@ -186,6 +302,28 @@ def activate(
             )
 
     with claude_config_lock(), claude_credentials_lock():
+        # Two guards before anything is overwritten, both under Claude Code's
+        # own locks so nothing can move between check and write.
+        #
+        # 1. Capture the *outgoing* account's live credential if Claude Code
+        #    refreshed it past our backup. The periodic sync-active tick closes
+        #    this window most of the time, but a switch landing inside it would
+        #    overwrite the only copy of that lineage, and the backup left
+        #    behind would hold a spent refresh token: the exact "log in again"
+        #    failure this app exists to prevent.
+        out_identity, out_live, _ = _drift_check(store)
+        if out_live is not None:
+            store.write_account_credentials(out_identity["account_uuid"], out_live)
+
+        # 2. Never activate an older lineage than the one this machine already
+        #    holds. The pool ciphertext can lag this Mac's own backup (a push
+        #    failed, or guard 1 just ran for this same account), and expiresAt
+        #    orders two lineages of one account well enough: lifetimes are
+        #    hours, cross-machine clock skew is seconds.
+        local_backup = store.read_account_credentials(account_uuid)
+        if local_backup and _expires_at(local_backup) > _expires_at(credentials):
+            credentials = local_backup
+
         merged = store.prepare_for_activation(credentials)
         store.write_active_credentials(merged)
 

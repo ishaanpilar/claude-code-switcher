@@ -72,6 +72,11 @@ def list_accounts() -> list[dict]:
     return rows
 
 
+def has_account(account_uuid: str) -> bool:
+    """Whether this machine has a backup registered for ``account_uuid``."""
+    return account_uuid in load()["accounts"]
+
+
 def upsert_account(account_uuid: str, *, email: str, organization_uuid: str | None) -> None:
     data = load()
     existing = data["accounts"].get(account_uuid, {})

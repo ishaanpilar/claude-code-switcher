@@ -93,24 +93,25 @@ struct PoolSyncService {
 
     // MARK: - Account tokens (encrypted)
 
-    private struct NewAccountToken: Encodable {
-        let account_id: UUID
-        let recipient_user_id: UUID?
-        let ciphertext: String
-        let nonce: String
+    private struct PushTokenParams: Encodable {
+        let p_account: UUID
+        let p_ciphertext: String
+        let p_nonce: String
     }
 
-    /// Encrypts `token` with the team key and upserts the team-key row (`recipient_user_id` nil).
-    /// Never called for `.visibilityOnly` accounts: the caller checks first, so such a token is
-    /// never even read out of local storage.
+    /// Encrypts `token` with the team key and upserts the team-key row via the
+    /// `push_account_token` RPC, which accepts the write from the account's owner *or* whoever
+    /// holds a live claim on it. That second path is what keeps a shared account alive: refresh
+    /// tokens are single-use, so whoever last drove the account holds the only live lineage, and
+    /// before this RPC a non-owner had no way to put it back. Direct `account_tokens` writes stay
+    /// owner-only under RLS; this is the one sanctioned non-owner path. Never called for
+    /// `.visibilityOnly` accounts — the caller checks first, and the server refuses anyway.
     func pushToken(accountId: UUID, plaintextToken: String, teamKey: SymmetricKey) async throws {
         let (ciphertext, nonce) = try TeamCrypto.encrypt(plaintextToken, key: teamKey)
-        let payload = NewAccountToken(
-            account_id: accountId, recipient_user_id: nil, ciphertext: ciphertext, nonce: nonce
-        )
         try await client
-            .from("account_tokens")
-            .upsert(payload, onConflict: "account_id,recipient_key")
+            .rpc("push_account_token", params: PushTokenParams(
+                p_account: accountId, p_ciphertext: ciphertext, p_nonce: nonce
+            ))
             .execute()
     }
 

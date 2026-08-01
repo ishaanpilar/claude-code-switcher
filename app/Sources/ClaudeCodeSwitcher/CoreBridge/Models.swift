@@ -137,6 +137,57 @@ struct RefreshedToken: Codable {
     }
 }
 
+/// Answers the only two questions Swift ever asks of a plaintext OAuth credential, without
+/// modelling the token: the JSON is Claude Code's, and treating it as opaque everywhere else is
+/// what keeps this app compatible when its shape drifts.
+enum OAuthCredential {
+    /// `claudeAiOauth.expiresAt` in epoch ms, or nil for anything unparseable (including a raw
+    /// managed API key). Comparable across machines at token-lifetime granularity: lifetimes are
+    /// hours, clock skew is seconds, so "larger expiresAt" reliably identifies the newer of two
+    /// lineages of the same account.
+    static func expiresAtMs(_ token: String) -> Double? {
+        guard let data = token.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = json["claudeAiOauth"] as? [String: Any],
+              let expiresAt = oauth["expiresAt"] as? Double
+        else { return nil }
+        return expiresAt
+    }
+
+    /// Whether the token expires inside Claude Code's own 5-minute refresh window plus margin:
+    /// the same 10-minute FRESHEN_BUFFER_MS claude-swap tuned. Unparseable tokens report false,
+    /// so a managed API key is never "freshened".
+    static func isNearExpiry(_ token: String) -> Bool {
+        guard let expiresAt = expiresAtMs(token) else { return false }
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        return nowMs + 10 * 60 * 1000 >= expiresAt
+    }
+
+    /// The newer of several copies of the same account's credential, by `expiresAtMs`. nil only
+    /// when `tokens` is empty.
+    static func newest(of tokens: [String]) -> String? {
+        tokens.max { (expiresAtMs($0) ?? 0) < (expiresAtMs($1) ?? 0) }
+    }
+}
+
+/// Outcome of the `sync-active` command: whether the active account's local backup had to be
+/// brought back in line with the credential Claude Code is actually using. `synced == false` is
+/// the ordinary case, not a failure — `reason` distinguishes "nothing had drifted" from the
+/// several ways there was nothing to sync (see `switch.sync_active_credential`).
+struct CredentialSync: Codable {
+    let synced: Bool
+    let reason: String
+    let accountUuid: String?
+    let email: String?
+
+    enum CodingKeys: String, CodingKey {
+        case synced
+        case reason
+        case accountUuid = "account_uuid"
+        case email
+    }
+}
+
 /// The envelope every ccswitch-core command prints: `{"ok": true, ...}` or
 /// `{"ok": false, "error": {...}}`. Decoded generically, then the caller decodes
 /// the specific payload once `ok` is confirmed true. See CoreBridge.run().

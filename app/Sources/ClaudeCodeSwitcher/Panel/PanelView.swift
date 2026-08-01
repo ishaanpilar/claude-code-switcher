@@ -166,13 +166,6 @@ struct PanelView: View {
                     Task { await state.switchToBestAccount() }
                 }
                 .disabled(state.isSwitching)
-                // Round-robin, deliberately ignoring usage: "give me a different one" rather than
-                // "give me the emptiest one". `AppState.rotateAccount` existed with no caller, so
-                // this button was documented but unreachable.
-                PanelActionButton(title: "Rotate to next account", systemImage: "arrow.triangle.2.circlepath") {
-                    Task { await state.rotateAccount() }
-                }
-                .disabled(state.isSwitching)
             }
             PanelActionButton(title: "Add current account", systemImage: "plus.circle") {
                 if isPoolReady {
