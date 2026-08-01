@@ -134,6 +134,15 @@ extension CoreBridge {
         return try JSONDecoder().decode(AccountEnvelope.self, from: data).account
     }
 
+    /// Brings the active account's local backup back in line with the credential Claude Code is
+    /// actually using, when its own token refresh has moved past our copy. Cheap and idempotent:
+    /// in the steady state it does two Keychain reads, finds them equal and returns
+    /// `synced == false` without taking any lock. See `switch.sync_active_credential`.
+    func syncActiveCredential() async throws -> CredentialSync {
+        let data = try await run(["sync-active"])
+        return try JSONDecoder().decode(CredentialSync.self, from: data)
+    }
+
     @discardableResult
     func switchTo(accountUuid: String) async throws -> AccountIdentity {
         let data = try await run(["switch", "--account-uuid", accountUuid])

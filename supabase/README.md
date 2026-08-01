@@ -4,8 +4,12 @@ Everything the app stores in the cloud. Every table has row-level security
 enabled, and every mutation either checks `is_team_member()` or goes through a
 `security definer` RPC that checks it internally.
 
-**Applied through `20260723000002`.** `20260725000001`, `20260725000002`, and
-`20260726000001` are new and still need applying.
+**Applied through `20260723000002`.** `20260725000001`, `20260725000002`,
+`20260726000001` and `20260801000001` are new and still need applying.
+
+`20260801000001` is the one the current app build depends on: without it,
+`push_account_token` does not exist and every token write-back fails, which is
+the bug it was written to fix. Apply it **before** distributing that build.
 
 ## Applying migrations
 

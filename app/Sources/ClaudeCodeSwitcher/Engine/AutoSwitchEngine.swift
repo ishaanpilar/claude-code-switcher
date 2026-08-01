@@ -217,16 +217,25 @@ final class AutoSwitchEngine {
             switch await tryActivate(candidate) {
             case .switched:
                 lastSwitchAt = Date()
+                // Re-share the outgoing account's token before giving up its claim: the switch
+                // just banked its freshest lineage into the local backup (core does this under
+                // Claude Code's own locks), and the claim still held on it is what authorizes a
+                // non-owner's push. Push first, release second — released first, the push would be
+                // rejected server-side and the pool copy left dead.
+                if let previousAccountUuid {
+                    await state.pushTokenIfShared(accountUuid: previousAccountUuid)
+                }
                 // Give up whatever we held; a no-op if we never claimed anything. Unconditional,
                 // matching AppState.switchTo's release.
                 if let previousPoolAccountId = previousAccountUuid.flatMap({ state.poolAccountsByUuid[$0]?.id }),
                    previousPoolAccountId != candidate.poolAccount?.id {
                     try? await poolSync.releaseClaim(accountId: previousPoolAccountId)
                 }
-                // Adopt a reservation on the new account only if it's ours to reserve and we opted
-                // in, the same condition tryActivate took the claim under. This just keeps
-                // AppState's heartbeat in sync with it.
-                if state.reserveAccountsWhileInUse, let poolAccount = candidate.poolAccount, poolAccount.ownerUserId == myUserId {
+                // Adopt the reservation tryActivate took, under the same condition it took it:
+                // every shared account, plus owned accounts when the reserve opt-in is on. This
+                // keeps AppState's heartbeat driving the lease so it doesn't lapse mid-session.
+                if let poolAccount = candidate.poolAccount,
+                   poolAccount.shareMode == .shared || (state.reserveAccountsWhileInUse && poolAccount.ownerUserId == myUserId) {
                     state.adoptClaim(accountId: poolAccount.id)
                 }
                 await logSwitch(from: previousAccountUuid, to: candidate.accountUuid, trigger: trigger)
@@ -257,7 +266,7 @@ final class AutoSwitchEngine {
         let reason: String
         switch trigger {
         case "failover": reason = "failover"
-        case "manual-best", "manual-rotate": reason = "manual"
+        case "manual-best": reason = "manual"
         default: reason = "auto"  // "proactive" / "at-limit"
         }
         let fromId = from.flatMap { state.poolAccountsByUuid[$0]?.id }
@@ -284,26 +293,6 @@ final class AutoSwitchEngine {
             return event
         }
         return await activateFirstViable(ordered, trigger: "manual-best")
-    }
-
-    /// One-click "rotate": moves to the next eligible account after the active one, in the same
-    /// email-sorted order the panel shows, wrapping around. Ignores usage by design, since this is
-    /// a manual round-robin rather than a usage decision.
-    @discardableResult
-    func rotate() async -> AutoSwitchEvent {
-        await releaseRecovered()
-        let activeUuid = state.activeAccount?.accountUuid
-        let candidates = eligibleManualCandidates(excluding: activeUuid)
-        guard !candidates.isEmpty else {
-            let event = AutoSwitchEvent.blocked(reason: "no other eligible account")
-            onEvent?(event)
-            return event
-        }
-        let all = state.displayAccounts.sorted { $0.email < $1.email }
-        let startIndex = all.firstIndex(where: { $0.accountUuid == activeUuid }).map { ($0 + 1) % all.count } ?? 0
-        let rotatedOrder = Array(all[startIndex...] + all[..<startIndex])
-        let ordered = rotatedOrder.filter { row in candidates.contains { $0.accountUuid == row.accountUuid } }
-        return await activateFirstViable(ordered, trigger: "manual-rotate")
     }
 
     /// Claude-swap's re-login detection (`_release_recovered_quarantines`): compare the
@@ -342,18 +331,43 @@ final class AutoSwitchEngine {
     }
 
     private func tryActivate(_ candidate: DisplayAccount) async -> ActivateOutcome {
-        var token: String
-        if candidate.isLocallyKnown {
-            guard let t = try? await bridge.exportToken(accountUuid: candidate.accountUuid) else { return .skip }
-            token = t
-        } else if let poolAccount = candidate.poolAccount, poolAccount.shareMode == .shared, let teamKey {
-            guard let tokenRow = try? await poolSync.fetchTeamKeyToken(accountId: poolAccount.id) else { return .skip }
-            guard let plaintext = try? TeamCrypto.decrypt(ciphertext: tokenRow.ciphertext, nonce: tokenRow.nonce, key: teamKey) else {
-                return .skip
+        // Newest lineage wins. The local backup and the pool ciphertext can each be ahead of the
+        // other: the pool copy is newer after a teammate drove the account (they push on
+        // rotation), the local copy is newer when this Mac drove it last and a push failed.
+        // Activating — or worse, freshening — the older of the two means consuming a spent
+        // refresh token, so gather both and compare before touching either.
+        var tokens: [String] = []
+        if candidate.isLocallyKnown, let local = try? await bridge.exportToken(accountUuid: candidate.accountUuid) {
+            tokens.append(local)
+        }
+        if let poolAccount = candidate.poolAccount, poolAccount.shareMode == .shared, let teamKey,
+           let tokenRow = try? await poolSync.fetchTeamKeyToken(accountId: poolAccount.id),
+           let plaintext = try? TeamCrypto.decrypt(ciphertext: tokenRow.ciphertext, nonce: tokenRow.nonce, key: teamKey) {
+            tokens.append(plaintext)
+        }
+        guard var token = OAuthCredential.newest(of: tokens) else {
+            return .skip  // visibility-only and not locally known, or nothing readable
+        }
+
+        // Claim before freshening, not after. Freshening consumes a single-use refresh token, so
+        // freshening first and then losing the claim race would leave this Mac holding the only
+        // live lineage of an account a teammate just took. For a shared account the claim is also
+        // what authorizes push_account_token below, whoever owns the account — that is how the
+        // pool copy stays alive when a non-owner drives it. nil means someone raced in since
+        // `eligibleManualCandidates` ran: skip. A thrown error is the offline case: proceed
+        // unclaimed, since switching locally must not depend on Supabase being reachable.
+        var claimedPoolAccountId: UUID?
+        if let poolAccount = candidate.poolAccount,
+           poolAccount.shareMode == .shared || (state.reserveAccountsWhileInUse && poolAccount.ownerUserId == myUserId) {
+            do {
+                guard try await poolSync.claim(accountId: poolAccount.id) != nil else { return .skip }
+                claimedPoolAccountId = poolAccount.id
+            } catch {
+                claimedPoolAccountId = nil
             }
-            token = plaintext
-        } else {
-            return .skip  // visibility-only and not locally known, so nothing to activate
+        }
+        func releaseClaimOnFailure() async {
+            if let claimedPoolAccountId { try? await poolSync.releaseClaim(accountId: claimedPoolAccountId) }
         }
 
         // Freshen: make sure the token outlives Claude Code's own 5-minute refresh buffer before
@@ -366,9 +380,10 @@ final class AutoSwitchEngine {
         // real accounts got permanently logged out. The cooldown makes it impossible from this
         // engine's side, independently of AppState.switchTo's mutex, which serializes only this
         // device's switches and not a race against another device holding the same token.
-        if isNearExpiry(token) {
+        if OAuthCredential.isNearExpiry(token) {
             let now = Date()
             if let last = lastFreshenAttempt[candidate.accountUuid], now.timeIntervalSince(last) < freshenCooldownS {
+                await releaseClaimOnFailure()
                 return .skip  // freshened moments ago, by us or a race; don't pile on
             }
             lastFreshenAttempt[candidate.accountUuid] = now
@@ -378,41 +393,31 @@ final class AutoSwitchEngine {
                 // Persisted before activation is attempted. See CoreBridge.saveCredentials: a
                 // failed activate must never discard the only valid copy.
                 try? await bridge.saveCredentials(accountUuid: candidate.accountUuid, token: token)
-                if let poolAccount = candidate.poolAccount, let teamKey {
+                // Shared only — a visibility-only account's login never leaves this Mac. Owner or
+                // claim-holder, matching what push_account_token accepts server-side, so no doomed
+                // round trip gets its failure swallowed by `try?`.
+                if let poolAccount = candidate.poolAccount, poolAccount.shareMode == .shared,
+                   poolAccount.ownerUserId == myUserId || claimedPoolAccountId == poolAccount.id, let teamKey {
                     try? await poolSync.pushToken(accountId: poolAccount.id, plaintextToken: token, teamKey: teamKey)
                 }
             } catch let error as CoreBridgeError where error.code == "invalid_grant" {
+                await releaseClaimOnFailure()
                 return .quarantine(reason: "invalid_grant", fingerprint: QuarantineStore.fingerprint(ofCredentialJSON: token))
             } catch {
+                await releaseClaimOnFailure()
                 return .skip  // transient: try the next candidate now, retry this one next tick
             }
-        }
-
-        // Claim before activating, only when reservations are on (off by default) and only for a
-        // pool account we own. This engine never reserves a teammate's account for them.
-        // `eligibleManualCandidates` already filtered out anything someone else reserved, so a
-        // failed claim here means a race across the owner's own devices. Skip either way.
-        if state.reserveAccountsWhileInUse, let poolAccount = candidate.poolAccount, poolAccount.ownerUserId == myUserId {
-            guard (try? await poolSync.claim(accountId: poolAccount.id)) != nil else { return .skip }
         }
 
         guard (try? await bridge.importActivate(
             accountUuid: candidate.accountUuid, token: token,
             email: candidate.email, organizationUuid: candidate.organizationUuid
-        )) != nil else { return .skip }
+        )) != nil else {
+            await releaseClaimOnFailure()
+            return .skip
+        }
 
         return .switched
-    }
-
-    private func isNearExpiry(_ token: String) -> Bool {
-        guard let data = token.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let oauth = json["claudeAiOauth"] as? [String: Any],
-              let expiresAt = oauth["expiresAt"] as? Double
-        else { return false }
-        let nowMs = Date().timeIntervalSince1970 * 1000
-        let freshenBufferMs = 10.0 * 60 * 1000
-        return nowMs + freshenBufferMs >= expiresAt
     }
 
     private func inCooldown() -> Bool {

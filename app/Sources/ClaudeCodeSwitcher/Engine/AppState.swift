@@ -42,6 +42,9 @@ final class AppState: ObservableObject {
     @Published private(set) var usageByAccount: [String: Usage] = [:]
     @Published private(set) var isRefreshing = false
     @Published private(set) var isSwitching = false
+    /// One credential sync in flight at a time. The timer and `refresh()` both drive it, and two
+    /// concurrent `sync-active` subprocesses would be redundant rather than harmful.
+    private var isSyncingCredential = false
     @Published var lastError: String?
     /// Transient status line under the panel. Clears itself after `toastDuration` so a message
     /// from ten minutes ago can't sit there looking like the result of what you just did.
@@ -71,7 +74,14 @@ final class AppState: ObservableObject {
     /// Whether this device reserves an account while in use: a "held by X" lease that blocks
     /// teammates from switching to it and steers auto-switch away. Off by default, since two
     /// people can share one account at the same time. Local preference (Settings → Team).
-    @Published private(set) var reserveAccountsWhileInUse = UserDefaults.standard.bool(forKey: "com.claudecodeswitcher.reserveAccounts")
+    /// On by default (a stored value still wins): with holder write-back, a reservation is what
+    /// makes exactly one Mac the authoritative refresher of a shared account's single-use tokens,
+    /// not just a courtesy — two Macs driving one login is precisely how teammates lock each other
+    /// out.
+    @Published private(set) var reserveAccountsWhileInUse =
+        UserDefaults.standard.object(forKey: "com.claudecodeswitcher.reserveAccounts") == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: "com.claudecodeswitcher.reserveAccounts")
 
     private let bridge: CoreBridge
     private let poolSync = PoolSyncService()
@@ -90,6 +100,14 @@ final class AppState: ObservableObject {
     private lazy var pollLeaderController = PollLeaderController(bridge: bridge)
     private var pollLeaderStatusTimer: Timer?
     private var claimExpiryTimer: Timer?
+    /// Polls for Claude Code having refreshed the active account's token out from under us. A
+    /// timer rather than a file watcher because on macOS the live credential lives in the
+    /// Keychain, which has no change notification to subscribe to, and Claude Code's refresh
+    /// never touches the `~/.claude.json` that `AutoCaptureController` does watch.
+    private var credentialSyncTimer: Timer?
+    /// Long enough that the steady-state cost (two Keychain reads, no lock) is negligible, short
+    /// enough that the window where the pool holds a dead token stays minutes rather than days.
+    private static let credentialSyncIntervalS: TimeInterval = 120
 
     private var currentTeam: Team?
     private var currentMember: Member?
@@ -120,6 +138,11 @@ final class AppState: ObservableObject {
             ? (configPath as NSString).appendingPathComponent(".claude.json")
             : (NSHomeDirectory() as NSString).appendingPathComponent(".claude.json")
         autoCapture.start(configPath: claudeJSON)
+        credentialSyncTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.credentialSyncIntervalS, repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.syncActiveCredential() }
+        }
         Diagnostics.log("app started")
         Task { await refresh() }
     }
@@ -128,6 +151,7 @@ final class AppState: ObservableObject {
         autoCapture.stop()
         realtimeTasks.forEach { $0.cancel() }
         heartbeatTimer?.invalidate()
+        credentialSyncTimer?.invalidate()
         autoSwitchEngine.stop()
         pollLeaderController.stop()
         pollLeaderStatusTimer?.invalidate()
@@ -175,6 +199,10 @@ final class AppState: ObservableObject {
             activeAccount = snap.active
             knownAccounts = snap.knownAccounts
             lastError = nil
+            // Before refreshUsage, not after: its quarantine-recovery check is gated behind a
+            // usage read that uses the stored credential, so a stale one makes recovery
+            // unreachable for exactly the accounts that need it. See syncActiveCredential.
+            await syncActiveCredential()
             await refreshUsage()
             // Unconditional, not gated on auto-switch being enabled. Covers a purely local
             // account's quarantine (fingerprint-based, see AutoSwitchEngine.releaseRecovered) and,
@@ -183,6 +211,54 @@ final class AppState: ObservableObject {
             refreshAttributionSessionState()
         } catch {
             lastError = (error as? CoreBridgeError)?.message ?? error.localizedDescription
+        }
+    }
+
+    /// Reconciles the active account's stored credential with the one Claude Code is actually
+    /// using, and re-shares it when it has moved on.
+    ///
+    /// This is what stops a shared account rotting into a login prompt. Claude Code refreshes its
+    /// own OAuth token as it runs and the refresh token rotates every time, so without this the
+    /// ciphertext in `account_tokens` stays frozen at whatever was uploaded on sharing day while
+    /// the owner's own Mac quietly moves on. Every teammate who then pulls it gets a spent refresh
+    /// token and a login screen — and the harder the owner uses the account, the deader the shared
+    /// copy becomes.
+    func syncActiveCredential() async {
+        // A switch rewrites the credential and the identity naming it together. The core re-checks
+        // under Claude Code's own locks anyway, but not starting is cheaper than being turned away
+        // there, and it keeps the timer from piling subprocesses onto an in-flight switch.
+        guard !isSwitching, !isSyncingCredential else { return }
+        isSyncingCredential = true
+        defer { isSyncingCredential = false }
+
+        guard let result = try? await bridge.syncActiveCredential(), result.synced,
+              let accountUuid = result.accountUuid
+        else { return }
+        Diagnostics.log("credential drift: re-captured \(result.email ?? accountUuid)")
+        await pushTokenIfShared(accountUuid: accountUuid)
+    }
+
+    /// Re-uploads an account's token to the pool after its local copy has moved on.
+    ///
+    /// Shared only — a visibility-only account's login is promised never to leave this Mac. The
+    /// `push_account_token` RPC accepts the write from the account's owner or from whoever holds
+    /// a live claim on it, so gate on the same condition locally to avoid doomed round trips.
+    /// This is what lets a teammate who drove a shared account repair the pool copy: their claim,
+    /// not ownership, is the authority. Internal rather than private because `AutoSwitchEngine`
+    /// calls it for the switched-away account too.
+    func pushTokenIfShared(accountUuid: String) async {
+        guard let poolAccount = poolAccountsByUuid[accountUuid],
+              poolAccount.shareMode == .shared,
+              holdsTokenWriteAuthority(over: poolAccount),
+              let teamKey
+        else { return }
+        do {
+            let token = try await bridge.exportToken(accountUuid: accountUuid)
+            try await poolSync.pushToken(accountId: poolAccount.id, plaintextToken: token, teamKey: teamKey)
+            Diagnostics.log("re-shared refreshed token for \(poolAccount.email)")
+        } catch {
+            // Best-effort: the next tick that finds drift pushes again, as does the recovery path
+            // in refreshUsage once a usage read succeeds.
         }
     }
 
@@ -290,7 +366,71 @@ final class AppState: ObservableObject {
             return
         }
         do {
-            if display.isLocallyKnown {
+            let sharedPool = display.poolAccount.flatMap { $0.shareMode == .shared ? $0 : nil }
+            if let poolAccount = sharedPool, let teamKey {
+                // Shared accounts take one unified path whether or not this Mac has local
+                // credentials: claim, activate the newest known lineage, freshening it first if
+                // it's about to expire. Claiming is unconditional for shared accounts (not gated
+                // on the reserve opt-in) because the claim is what authorizes push_account_token
+                // — without it a non-owner's rotated token could never reach the pool.
+                do {
+                    guard try await poolSync.claim(accountId: poolAccount.id) != nil else {
+                        lastError = "\(display.email) was reserved by a teammate just now. Try another account."
+                        return
+                    }
+                    claimedTarget = poolAccount.id
+                } catch {
+                    // Supabase unreachable: proceed unclaimed rather than blocking a local switch.
+                }
+
+                // Newest lineage wins: the pool copy is ahead after a teammate drove the account,
+                // the local backup is ahead when this Mac drove it last and a push failed.
+                // Freshening the older one would consume a spent refresh token for nothing.
+                var tokens: [String] = []
+                if display.isLocallyKnown, let local = try? await bridge.exportToken(accountUuid: display.accountUuid) {
+                    tokens.append(local)
+                }
+                if let tokenRow = try? await poolSync.fetchTeamKeyToken(accountId: poolAccount.id),
+                   let plaintext = try? TeamCrypto.decrypt(ciphertext: tokenRow.ciphertext, nonce: tokenRow.nonce, key: teamKey) {
+                    tokens.append(plaintext)
+                }
+                guard var token = OAuthCredential.newest(of: tokens) else {
+                    await releaseClaimedTargetOnFailure()
+                    lastError = "No shared token found for \(display.email) yet."
+                    return
+                }
+
+                // The freshen the automatic engine always had and the manual path lacked: without
+                // it, a stale shared token was activated blindly and the failure surfaced minutes
+                // later as Claude Code's login screen, with no explanation and no repair.
+                if OAuthCredential.isNearExpiry(token) {
+                    do {
+                        let refreshed = try await bridge.refreshToken(token)
+                        token = refreshed.token
+                        // Persisted before activation: a failed activate must never discard the
+                        // only valid copy (the refresh token just consumed was single-use).
+                        try? await bridge.saveCredentials(accountUuid: display.accountUuid, token: token)
+                    } catch let error as CoreBridgeError where error.code == "invalid_grant" {
+                        await releaseClaimedTargetOnFailure()
+                        lastError = "\(display.email)'s stored login is dead — its token was rotated somewhere that couldn't re-share it. Asked the owner to log in again."
+                        await requestReauth(display)
+                        return
+                    } catch {
+                        // Transient refresh trouble: the token may still have life in it, and
+                        // Claude Code refreshes on its own once running. Proceed with what we have.
+                    }
+                }
+
+                do {
+                    _ = try await bridge.importActivate(
+                        accountUuid: display.accountUuid, token: token,
+                        email: display.email, organizationUuid: display.organizationUuid
+                    )
+                } catch {
+                    await releaseClaimedTargetOnFailure()
+                    throw error
+                }
+            } else if display.isLocallyKnown {
                 claimedTarget = try await claimIfPossible(display)
                 do {
                     _ = try await bridge.switchTo(accountUuid: display.accountUuid)
@@ -298,44 +438,31 @@ final class AppState: ObservableObject {
                     await releaseClaimedTargetOnFailure()
                     throw error
                 }
-            } else if let poolAccount = display.poolAccount, poolAccount.shareMode == .shared {
-                guard let teamKey else {
-                    lastError = "This device doesn't have the team key yet, so it can't decrypt shared accounts."
-                    return
-                }
-                // Only the account's owner may reserve it, and only if they've opted in. This
-                // device never reserves an account someone else owns.
-                if reserveAccountsWhileInUse, poolAccount.ownerUserId == myUserId,
-                   (try await poolSync.claim(accountId: poolAccount.id)) != nil {
-                    claimedTarget = poolAccount.id
-                    heldClaimAccountId = poolAccount.id
-                    startHeartbeat()
-                }
-                guard let tokenRow = try await poolSync.fetchTeamKeyToken(accountId: poolAccount.id) else {
-                    await releaseClaimedTargetOnFailure()
-                    lastError = "No shared token found for \(display.email) yet."
-                    return
-                }
-                do {
-                    let plaintext = try TeamCrypto.decrypt(ciphertext: tokenRow.ciphertext, nonce: tokenRow.nonce, key: teamKey)
-                    _ = try await bridge.importActivate(
-                        accountUuid: display.accountUuid, token: plaintext,
-                        email: display.email, organizationUuid: display.organizationUuid
-                    )
-                } catch {
-                    await releaseClaimedTargetOnFailure()
-                    throw error
-                }
+            } else if sharedPool != nil {
+                lastError = "This device doesn't have the team key yet, so it can't decrypt shared accounts."
+                return
             } else {
                 lastError = "\(display.email) is visibility-only. Ask its owner to switch to it, or to share the token."
                 return
             }
+            // Re-share the outgoing account's token before touching any claims: the switch banked
+            // its freshest lineage into its local backup (core captures it under Claude Code's own
+            // locks), and the claim still held on it is what authorizes a non-owner's push.
+            // Pushed first, released second — the other order gets rejected server-side and leaves
+            // the pool copy dead.
+            if let previousUuid { await pushTokenIfShared(accountUuid: previousUuid) }
             // Release the account we just switched away from, only after the new switch actually
             // succeeded, so a failed attempt never gives up a claim on the account the user is
             // still on. Unconditional: releasing a claim we never took is a no-op.
             if let previousPoolAccountId, previousPoolAccountId != display.poolAccount?.id {
                 try? await poolSync.releaseClaim(accountId: previousPoolAccountId)
                 if heldClaimAccountId == previousPoolAccountId { heldClaimAccountId = nil }
+            }
+            // Adopt the new claim locally only now, after the old one is fully handed back, so a
+            // failure anywhere above never stopped the heartbeat on the claim actually still held.
+            if let claimedTarget {
+                heldClaimAccountId = claimedTarget
+                startHeartbeat()
             }
             toast = "Switched. Takes effect within 30s, or restart Claude Code now."
             await logSwitchIfPooled(from: previousUuid, to: display.accountUuid, reason: "manual")
@@ -434,10 +561,21 @@ final class AppState: ObservableObject {
         membersById[poolAccount.ownerUserId]?.displayName
     }
 
-    /// Called for locally-known accounts, which is not the same as owned: a teammate's shared
-    /// account you've activated here before is locally known too. Only ever reserves an account
-    /// you own, and only if you've opted in. A non-owned account is skipped rather than blocking
-    /// the switch, since local credentials work regardless.
+    /// Whether `push_account_token` would accept a write from this user: the account's owner, or
+    /// the holder of a live claim on it. `heldClaimAccountId` covers the claim this device is
+    /// heartbeating right now; `claimsByAccountId` covers one taken earlier — notably the account
+    /// being switched *away* from, whose claim is still ours until the switch releases it.
+    private func holdsTokenWriteAuthority(over poolAccount: PoolAccount) -> Bool {
+        if poolAccount.ownerUserId == myUserId { return true }
+        if heldClaimAccountId == poolAccount.id { return true }
+        if let claim = claimsByAccountId[poolAccount.id] { return claim.isLive && claim.heldBy == myUserId }
+        return false
+    }
+
+    /// The reservation step for the *non-shared* activation path (shared accounts claim
+    /// unconditionally inside `switchTo`, since there the claim also authorizes token write-back).
+    /// Only ever reserves an account you own, and only if you've opted in; a non-owned account is
+    /// skipped rather than blocking the switch, since local credentials work regardless.
     ///
     /// Returns the pool account id if a reservation was actually taken, so the caller can hand it
     /// back should the switch itself then fail.
@@ -450,8 +588,9 @@ final class AppState: ObservableObject {
         return poolAccount.id
     }
 
-    /// The reservation opt-in (Settings → Team). Off by default. Turning it off gives up any lease
-    /// this device holds, so nothing shows as reserved by us anymore.
+    /// The reservation opt-in (Settings → Team). On by default: see `reserveAccountsWhileInUse`.
+    /// Turning it off gives up any lease this device holds, so nothing shows as reserved by us
+    /// anymore. It no longer affects shared-account switches, which always claim.
     func setReserveAccountsWhileInUse(_ enabled: Bool) {
         reserveAccountsWhileInUse = enabled
         UserDefaults.standard.set(enabled, forKey: "com.claudecodeswitcher.reserveAccounts")
@@ -556,6 +695,15 @@ final class AppState: ObservableObject {
             .sink { [weak self] token in self?.updateAuthSession(accessToken: token) }
         Task {
             await refreshPool()
+            // Launch-time repair. The first credential sync runs before the pool is configured, so
+            // a drift repaired then was corrected locally but never re-shared: `pushTokenIfShared`
+            // had no idea yet what was shared or who owned it. Now that it does, make sure the
+            // team's copy is the one this Mac actually holds, rather than waiting for Claude Code
+            // to refresh again before anyone notices.
+            await syncActiveCredential()
+            if let activeUuid = activeAccount?.accountUuid {
+                await pushTokenIfShared(accountUuid: activeUuid)
+            }
             await refreshUsage()  // now that pool accounts are known, push what's already cached
         }
         startPoolRealtime()
@@ -663,15 +811,6 @@ final class AppState: ObservableObject {
         guard beginSwitching() else { return .blocked(reason: "a switch is already in progress") }
         defer { endSwitching() }
         return await autoSwitchEngine.switchToBest()
-    }
-
-    /// One-click "move to the next account" in the same email-sorted order the panel renders,
-    /// wrapping around. Ignores usage by design: a manual round-robin, not a usage decision.
-    @discardableResult
-    func rotateAccount() async -> AutoSwitchEvent {
-        guard beginSwitching() else { return .blocked(reason: "a switch is already in progress") }
-        defer { endSwitching() }
-        return await autoSwitchEngine.rotate()
     }
 
     // MARK: - Auto-switch settings
